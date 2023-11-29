@@ -2,7 +2,6 @@ package lsm
 
 import (
 	"github.com/andy-kimball/arenaskl"
-	"github.com/xgzlucario/LSM/codeman"
 )
 
 const (
@@ -20,8 +19,8 @@ type MemTable struct {
 }
 
 // NewMemTable
-func NewMemTable(arenaSize uint32) (*MemTable, error) {
-	skl := arenaskl.NewSkiplist(arenaskl.NewArena(arenaSize))
+func NewMemTable(size uint32) (*MemTable, error) {
+	skl := arenaskl.NewSkiplist(arenaskl.NewArena(size))
 	var it arenaskl.Iterator
 	it.Init(skl)
 
@@ -32,12 +31,8 @@ func NewMemTable(arenaSize uint32) (*MemTable, error) {
 }
 
 // Rotate a memtable to immutable state when it is full.
-func (mt *MemTable) Rotate() bool {
-	if mt.immu {
-		return false
-	}
+func (mt *MemTable) Rotate() {
 	mt.immu = true
-	return true
 }
 
 // Put a key-value pair to the memtable.
@@ -51,21 +46,4 @@ func (mt *MemTable) Put(key, value []byte) error {
 // Full
 func (mt *MemTable) Full() bool {
 	return mt.skl.Size() >= 4*MB
-}
-
-// MarshalBinary
-func (mt *MemTable) MarshalBinary() ([]byte, error) {
-	if !mt.immu {
-		panic("only memtable can be flush")
-	}
-
-	mt.it.SeekToFirst()
-	minBytes, _ := mt.it.Key(), mt.it.Value()
-
-	mt.it.SeekToLast()
-	maxBytes, _ := mt.it.Key(), mt.it.Value()
-
-	codeman.NewCodec().Bytes(minBytes).Bytes(maxBytes)
-
-	return nil, nil
 }
