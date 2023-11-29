@@ -2,14 +2,11 @@ syntax = "proto3";
 package cache;
 option go_package = "github.com/xgzlucario/LSM/pb";
 
-message DataBlockEntry {
+message DataBlock {
   repeated bytes keys = 1;
   repeated bytes values = 2;
   bytes types = 3;
-}
-
-message DataBlock {
-    repeated DataBlockEntry entries = 1;
+  uint32 size = 4;
 }
 
 message IndexBlockEntry {
@@ -25,6 +22,4 @@ message IndexBlock {
 message Footer {
     uint64 indexBlockOffset = 1;
     uint64 indexBlockSize = 2;
-    uint64 dataBlockOffset = 3;
-    uint64 dataBlockSize = 4;
 }

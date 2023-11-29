@@ -2,9 +2,28 @@ package lsm
 
 import "github.com/tidwall/wal"
 
-// LSM (Log Structured Merge Tree) defination.
+var (
+	DefaultConfig = &Config{
+		Path:          "data",
+		MemTableSize:  2 * MB,
+		DataBlockSize: 4 * KB,
+	}
+)
+
+// Config for LSM-Tree.
+type Config struct {
+	Path string
+
+	// memtable size.
+	MemTableSize uint32
+
+	// data block size.
+	DataBlockSize uint32
+}
+
+// LSM-Tree defination.
 type LSM struct {
-	path string
+	*Config
 
 	mt  *MemTable
 	imt []*MemTable // immutable memtables.
@@ -14,21 +33,16 @@ type LSM struct {
 }
 
 // NewLSM
-func NewLSM(path string) (*LSM, error) {
-	mt, err := NewMemTable(4 * MB)
-	if err != nil {
-		return nil, err
-	}
-
-	log, err := wal.Open(path, nil)
+func NewLSM(cfg *Config) (*LSM, error) {
+	log, err := wal.Open(cfg.Path, nil)
 	if err != nil {
 		return nil, err
 	}
 
 	return &LSM{
-		path: path,
-		mt:   mt,
-		wal:  log,
+		Config: cfg,
+		mt:     NewMemTable(cfg.MemTableSize),
+		wal:    log,
 	}, nil
 }
 
@@ -41,7 +55,7 @@ func (lsm *LSM) Put(key, value []byte) error {
 	}
 
 	// write memtable
-	if err := lsm.mt.Put(key, value); err != nil {
+	if err := lsm.mt.Put(key, value, vtypeVal); err != nil {
 		return err
 	}
 
@@ -49,12 +63,7 @@ func (lsm *LSM) Put(key, value []byte) error {
 	if lsm.mt.Full() {
 		lsm.mt.Rotate()
 		lsm.imt = append(lsm.imt, lsm.mt)
-
-		mt, err := NewMemTable(4 * MB)
-		if err != nil {
-			return err
-		}
-		lsm.mt = mt
+		lsm.mt = NewMemTable(lsm.MemTableSize)
 	}
 
 	return nil

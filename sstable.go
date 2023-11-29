@@ -1,12 +1,15 @@
 package lsm
 
 import (
+	"bytes"
+	"encoding/binary"
+
 	"github.com/xgzlucario/LSM/pb"
 	"google.golang.org/protobuf/proto"
 )
 
 /*
-      SSTable format:
+   LevelDB SSTable format:
                             +------------+
 	+-----------------+     |  entry[0]  | --> (shared_bytes, unshared_bytes, value_len, key_delta, value)
 	|  data_block[0]  | --> +------------+
@@ -40,47 +43,74 @@ const (
 
 // SSTable
 type SSTable struct {
+	*Config
 	*MemTable
 }
 
 // DumpTable
+// +-----------------+
+// |  data block[0]  | <--+
+// +-----------------+    |
+// |     ... ...     |    |
+// +-----------------+    |(2)
+// |  data block[n]  |    |
+// +-----------------+    |
+// |                 | ---+
+// |   index block   |
+// |                 | <--+
+// +-----------------+    |(1)
+// |     footer      | ---+
+// +-----------------+
 func (s *SSTable) DumpTable() []byte {
-	entry := &pb.DataBlockEntry{}
+	buf := bytes.NewBuffer(make([]byte, 0, s.DataBlockSize))
 
+	dataBlock := new(pb.DataBlock)
+	indexBlocks := make([]*pb.IndexBlockEntry, 0)
+
+	// iter memtable.
 	s.it.SeekToFirst()
-	for s.it.Valid() {
-		entry.Keys = append(entry.Keys, s.it.Key())
-		entry.Values = append(entry.Values, s.it.Value())
-		entry.Types = append(entry.Types, byte(s.it.Meta()))
+	for {
+		dataBlock.Keys = append(dataBlock.Keys, s.it.Key())
+		dataBlock.Values = append(dataBlock.Values, s.it.Value())
+		dataBlock.Types = append(dataBlock.Types, byte(s.it.Meta()))
+		dataBlock.Size += uint32(len(s.it.Key()) + len(s.it.Value()) + 1)
+
 		s.it.Next()
+
+		// encode data block.
+		if dataBlock.Size >= s.DataBlockSize || !s.it.Valid() {
+			src, _ := proto.Marshal(dataBlock)
+			// TODO zstd compress here.
+			indexBlocks = append(indexBlocks, &pb.IndexBlockEntry{
+				LastKey: dataBlock.Keys[len(dataBlock.Keys)-1],
+				Offset:  uint32(buf.Len()),
+				Size:    uint32(len(src)),
+			})
+			buf.Write(src)
+
+			// break if invalid.
+			if !s.it.Valid() {
+				break
+			}
+		}
 	}
 
-	// encode data block.
-	dataSrc, _ := proto.Marshal(&pb.DataBlock{
-		Entries: []*pb.DataBlockEntry{entry},
-	})
-
-	// encode index block.
-	indexSrc, _ := proto.Marshal(&pb.IndexBlock{
-		Entries: []*pb.IndexBlockEntry{
-			{
-				LastKey: s.it.Key(),
-				Offset:  0,
-				Size:    uint32(len(dataSrc)),
-			},
-		},
-	})
+	// encode index blocks.
+	indexSrc, _ := proto.Marshal(&pb.IndexBlock{Entries: indexBlocks})
 
 	// encode footer.
-	footerSrc, _ := proto.Marshal(&pb.Footer{
-		DataBlockOffset:  0,
-		DataBlockSize:    uint64(len(dataSrc)),
-		IndexBlockOffset: uint64(len(dataSrc)),
-		IndexBlockSize:   uint64(len(indexSrc)),
-	})
+	indexBlockOffset := uint64(buf.Len())
+	IndexBlockSize := uint64(len(indexSrc))
 
-	dataSrc = append(dataSrc, indexSrc...)
-	dataSrc = append(dataSrc, footerSrc...)
+	buf.Write(indexSrc)
 
-	return dataSrc
+	binary.Write(buf, binary.LittleEndian, indexBlockOffset)
+	binary.Write(buf, binary.LittleEndian, IndexBlockSize)
+
+	return buf.Bytes()
+}
+
+// FindSSTable
+func FindSSTable(key []byte, path string) ([]byte, error) {
+	return nil, nil
 }

@@ -19,7 +19,7 @@ type MemTable struct {
 }
 
 // NewMemTable
-func NewMemTable(size uint32) (*MemTable, error) {
+func NewMemTable(size uint32) *MemTable {
 	skl := arenaskl.NewSkiplist(arenaskl.NewArena(size))
 	var it arenaskl.Iterator
 	it.Init(skl)
@@ -27,20 +27,23 @@ func NewMemTable(size uint32) (*MemTable, error) {
 	return &MemTable{
 		skl: skl,
 		it:  &it,
-	}, nil
+	}
 }
 
 // Rotate a memtable to immutable state when it is full.
 func (mt *MemTable) Rotate() {
+	if mt.immu {
+		panic("immutable")
+	}
 	mt.immu = true
 }
 
 // Put a key-value pair to the memtable.
-func (mt *MemTable) Put(key, value []byte) error {
+func (mt *MemTable) Put(key, value []byte, vtype vtype) error {
 	if mt.immu {
 		panic("immutable")
 	}
-	return mt.it.Add(key, value, 0)
+	return mt.it.Add(key, value, uint16(vtype))
 }
 
 // Full
