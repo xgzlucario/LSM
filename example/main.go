@@ -11,7 +11,6 @@ import (
 )
 
 func main() {
-
 	cfg := lsm.DefaultConfig
 
 	memtable := lsm.NewMemTable(cfg.MemTableSize)
@@ -20,15 +19,10 @@ func main() {
 		memtable.Put(k, k)
 	}
 
-	sstable := &lsm.SSTable{
-		Config:   cfg,
-		MemTable: memtable,
-	}
-
-	src := sstable.DumpTable()
+	src := lsm.DumpTable(memtable, cfg)
 	os.WriteFile("test.sst", src, 0644)
 
-	res, err := lsm.FindSSTable([]byte("key50"), "test.sst")
+	res, err := lsm.FindTable([]byte("key50"), "test.sst")
 	fmt.Println(string(res), err)
 
 	time.Sleep(time.Hour)

@@ -1,8 +1,6 @@
-package codeman
+package lsm
 
-import (
-	"github.com/klauspost/compress/zstd"
-)
+import "github.com/klauspost/compress/zstd"
 
 var (
 	encoder, _ = zstd.NewWriter(
@@ -13,10 +11,12 @@ var (
 	decoder, _ = zstd.NewReader(nil)
 )
 
+// Compress with zstd algorithm.
 func Compress(src, dst []byte) []byte {
 	return encoder.EncodeAll(src, dst)
 }
 
+// Decompress with zstd algorithm.
 func Decompress(src, dst []byte) ([]byte, error) {
 	return decoder.DecodeAll(src, dst)
 }

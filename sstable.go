@@ -3,6 +3,7 @@ package lsm
 import (
 	"bytes"
 	"encoding/binary"
+	"hash/crc32"
 	"io"
 	"os"
 	"slices"
@@ -12,7 +13,8 @@ import (
 )
 
 const (
-	footerSize = 8
+	// footer contains [index_block_size, crc].
+	footerSize = 8 + 4
 )
 
 var (
@@ -26,56 +28,57 @@ const (
 	vtypeDel
 )
 
-// SSTable
-type SSTable struct {
-	*Config
-	*MemTable
-	// bloom *bloom.BloomFilter
+// TableDecoder
+type TableDecoder struct {
+	fd     *os.File
+	iblock pb.IndexBlock
 }
 
-// DumpTable
 // +-----------------+
 // |  data block[0]  | <--+
 // +-----------------+    |
 // |     ... ...     |    |
-// +-----------------+    |(2)
+// +-----------------+    |2
 // |  data block[n]  |    |
 // +-----------------+    |
 // |                 | ---+
 // |   index block   |
 // |                 | <--+
-// +-----------------+    |(1)
+// +-----------------+    |1
 // |     footer      | ---+
 // +-----------------+
-func (s *SSTable) DumpTable() []byte {
-	buf := bytes.NewBuffer(make([]byte, 0, s.DataBlockSize))
+// DumpTable dumps a memtable to a sstable.
+func DumpTable(mt *MemTable, cfg *Config) []byte {
+	buf := bytes.NewBuffer(make([]byte, 0, cfg.DataBlockSize))
 
 	dataBlock := new(pb.DataBlock)
 	indexBlocks := make([]*pb.IndexBlockEntry, 0)
 
 	// iter memtable.
-	s.it.SeekToFirst()
+	mt.it.SeekToFirst()
 	for {
-		dataBlock.Keys = append(dataBlock.Keys, s.it.Key())
-		dataBlock.Values = append(dataBlock.Values, s.it.Value())
-		dataBlock.Types = append(dataBlock.Types, byte(s.it.Meta()))
-		dataBlock.Size += uint32(len(s.it.Key()) + len(s.it.Value()) + 1)
+		dataBlock.Keys = append(dataBlock.Keys, mt.it.Key())
+		dataBlock.Values = append(dataBlock.Values, mt.it.Value())
+		dataBlock.Types = append(dataBlock.Types, byte(mt.it.Meta()))
+		dataBlock.Size += uint32(len(mt.it.Key()) + len(mt.it.Value()) + 1)
 
-		s.it.Next()
+		mt.it.Next()
 
 		// encode data blocks.
-		if dataBlock.Size >= s.DataBlockSize || !s.it.Valid() {
+		if dataBlock.Size >= cfg.DataBlockSize || !mt.it.Valid() {
 			src, _ := proto.Marshal(dataBlock)
-			// TODO zstd
+			// compress.
+			dst := Compress(src, nil)
+
 			indexBlocks = append(indexBlocks, &pb.IndexBlockEntry{
 				LastKey: dataBlock.Keys[len(dataBlock.Keys)-1],
 				Offset:  uint32(buf.Len()),
-				Size:    uint32(len(src)),
+				Size:    uint32(len(dst)),
 			})
-			buf.Write(src)
+			buf.Write(dst)
 
 			// break if end.
-			if !s.it.Valid() {
+			if !mt.it.Valid() {
 				break
 			}
 		}
@@ -86,44 +89,60 @@ func (s *SSTable) DumpTable() []byte {
 	buf.Write(data)
 
 	// encode footer.
-	IndexBlockSize := uint64(len(data))
-	binary.Write(buf, order, IndexBlockSize)
+	indexBlockSize := uint64(len(data))
+	binary.Write(buf, order, indexBlockSize)
+
+	crc := crc32.ChecksumIEEE(data)
+	binary.Write(buf, order, crc)
 
 	return buf.Bytes()
 }
 
-// FindSSTable
-func FindSSTable(key []byte, path string) ([]byte, error) {
+// NewTableDecoder
+func NewTableDecoder(path string) (*TableDecoder, error) {
 	fd, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer fd.Close()
+	return &TableDecoder{fd: fd}, nil
+}
 
-	// decode footer.
-	buf, err := seekRead(fd, -footerSize, footerSize, io.SeekEnd)
+// Close
+func (s *TableDecoder) Close() error {
+	return s.fd.Close()
+}
+
+// decodeIndexBlock
+func (s *TableDecoder) decodeIndexBlock() error {
+	buf, err := seekRead(s.fd, -footerSize, footerSize, io.SeekEnd)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	indexBlockSize := order.Uint64(buf)
+	crc := order.Uint32(buf[8:])
 
 	// decode index block.
-	buf, err = seekRead(fd, -int64(indexBlockSize+footerSize), indexBlockSize, io.SeekEnd)
+	buf, err = seekRead(s.fd, -int64(indexBlockSize+footerSize), indexBlockSize, io.SeekEnd)
 	if err != nil {
-		return nil, err
-	}
-	var indexBlock pb.IndexBlock
-	if err = proto.Unmarshal(buf, &indexBlock); err != nil {
-		return nil, err
+		return err
 	}
 
-	// decode data block.
+	// check crc.
+	if crc32.ChecksumIEEE(buf) != crc {
+		return ErrCRCChecksum
+	}
+
+	return proto.Unmarshal(buf, &s.iblock)
+}
+
+// findDataBlock
+func (s *TableDecoder) findDataBlock(key []byte) ([]byte, error) {
 	var dataBlock pb.DataBlock
 
-	for _, entry := range indexBlock.Entries {
+	for _, entry := range s.iblock.Entries {
 		if bytes.Compare(key, entry.LastKey) <= 0 {
 			// read
-			buf, err := seekRead(fd, int64(entry.Offset), uint64(entry.Size), io.SeekStart)
+			buf, err := seekRead(s.fd, int64(entry.Offset), uint64(entry.Size), io.SeekStart)
 			if err != nil {
 				return nil, err
 			}
@@ -143,6 +162,40 @@ func FindSSTable(key []byte, path string) ([]byte, error) {
 	}
 
 	return nil, nil
+}
+
+// decodeDataBlock
+func (s *TableDecoder) decodeDataBlock() error {
+	for _, entry := range s.iblock.Entries {
+		// read
+		src, err := seekRead(s.fd, int64(entry.Offset), uint64(entry.Size), io.SeekStart)
+		if err != nil {
+			return err
+		}
+		// decompress
+		dst, err := Decompress(src, nil)
+		if err != nil {
+			return err
+		}
+
+		var dataBlock pb.DataBlock
+		if err = proto.Unmarshal(dst, &dataBlock); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// FindTable
+func FindTable(key []byte, path string) ([]byte, error) {
+	tableDecoder, err := NewTableDecoder(path)
+	if err != nil {
+		return nil, err
+	}
+	if err = tableDecoder.decodeIndexBlock(); err != nil {
+		return nil, err
+	}
+	return tableDecoder.findDataBlock(key)
 }
 
 // seekRead first seek(offset, whence) and then read(size).

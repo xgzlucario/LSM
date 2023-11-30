@@ -1,6 +1,13 @@
 package lsm
 
-import "github.com/tidwall/wal"
+import (
+	"fmt"
+	"os"
+	"sync"
+	"time"
+
+	"github.com/tidwall/wal"
+)
 
 var (
 	DefaultConfig = &Config{
@@ -25,6 +32,7 @@ type Config struct {
 type LSM struct {
 	*Config
 
+	mu  sync.Mutex // mutex for memtables.
 	mt  *MemTable
 	imt []*MemTable // immutable memtables.
 
@@ -61,10 +69,36 @@ func (lsm *LSM) Put(key, value []byte) error {
 
 	// if memtable is full, rotate it.
 	if lsm.mt.Full() {
+		lsm.mu.Lock()
 		lsm.mt.Rotate()
 		lsm.imt = append(lsm.imt, lsm.mt)
 		lsm.mt = NewMemTable(lsm.MemTableSize)
+		lsm.mu.Unlock()
 	}
+
+	return nil
+}
+
+// MinorCompact
+func (lsm *LSM) MinorCompact() error {
+	lsm.mu.Lock()
+	defer lsm.mu.Unlock()
+
+	for _, mt := range lsm.imt {
+		src := DumpTable(mt, lsm.Config)
+
+		if err := os.WriteFile(fmt.Sprintf("L0-%d.sst", time.Now().UnixNano()), src, 0644); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// MajorCompact
+func (lsm *LSM) MajorCompact() error {
+	lsm.mu.Lock()
+	defer lsm.mu.Unlock()
 
 	return nil
 }
