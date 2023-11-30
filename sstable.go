@@ -8,6 +8,7 @@ import (
 	"os"
 	"slices"
 
+	"github.com/andy-kimball/arenaskl"
 	"github.com/xgzlucario/LSM/pb"
 	"google.golang.org/protobuf/proto"
 )
@@ -30,8 +31,8 @@ const (
 
 // TableDecoder
 type TableDecoder struct {
-	fd     *os.File
-	iblock pb.IndexBlock
+	fd         *os.File
+	indexBlock pb.IndexBlock
 }
 
 // +-----------------+
@@ -48,8 +49,8 @@ type TableDecoder struct {
 // |     footer      | ---+
 // +-----------------+
 // DumpTable dumps a memtable to a sstable.
-func DumpTable(mt *MemTable, cfg *Config) []byte {
-	buf := bytes.NewBuffer(make([]byte, 0, cfg.DataBlockSize))
+func DumpTable(mt *MemTable) []byte {
+	buf := bytes.NewBuffer(make([]byte, 0, DataBlockSize))
 
 	dataBlock := new(pb.DataBlock)
 	indexBlocks := make([]*pb.IndexBlockEntry, 0)
@@ -65,7 +66,7 @@ func DumpTable(mt *MemTable, cfg *Config) []byte {
 		mt.it.Next()
 
 		// encode data blocks.
-		if dataBlock.Size >= cfg.DataBlockSize || !mt.it.Valid() {
+		if dataBlock.Size >= DataBlockSize || !mt.it.Valid() {
 			src, _ := proto.Marshal(dataBlock)
 			// compress.
 			dst := Compress(src, nil)
@@ -88,14 +89,25 @@ func DumpTable(mt *MemTable, cfg *Config) []byte {
 	data, _ := proto.Marshal(&pb.IndexBlock{Entries: indexBlocks})
 	buf.Write(data)
 
-	// encode footer.
-	indexBlockSize := uint64(len(data))
-	binary.Write(buf, order, indexBlockSize)
-
-	crc := crc32.ChecksumIEEE(data)
-	binary.Write(buf, order, crc)
+	// encode footer[indexBlockSize, crc].
+	binary.Write(buf, order, uint64(len(data)))
+	binary.Write(buf, order, crc32.ChecksumIEEE(data))
 
 	return buf.Bytes()
+}
+
+// FindTable
+func FindTable(key []byte, path string) ([]byte, error) {
+	decoder, err := NewTableDecoder(path)
+	if err != nil {
+		return nil, err
+	}
+	defer decoder.Close()
+
+	if err = decoder.decodeIndexBlock(); err != nil {
+		return nil, err
+	}
+	return decoder.findKey(key)
 }
 
 // NewTableDecoder
@@ -132,21 +144,26 @@ func (s *TableDecoder) decodeIndexBlock() error {
 		return ErrCRCChecksum
 	}
 
-	return proto.Unmarshal(buf, &s.iblock)
+	return proto.Unmarshal(buf, &s.indexBlock)
 }
 
-// findDataBlock
-func (s *TableDecoder) findDataBlock(key []byte) ([]byte, error) {
+// findKey
+func (s *TableDecoder) findKey(key []byte) ([]byte, error) {
 	var dataBlock pb.DataBlock
 
-	for _, entry := range s.iblock.Entries {
+	for _, entry := range s.indexBlock.Entries {
 		if bytes.Compare(key, entry.LastKey) <= 0 {
 			// read
-			buf, err := seekRead(s.fd, int64(entry.Offset), uint64(entry.Size), io.SeekStart)
+			src, err := seekRead(s.fd, int64(entry.Offset), uint64(entry.Size), io.SeekStart)
 			if err != nil {
 				return nil, err
 			}
-			if err = proto.Unmarshal(buf, &dataBlock); err != nil {
+			// decompress
+			dst, err := Decompress(src, nil)
+			if err != nil {
+				return nil, err
+			}
+			if err = proto.Unmarshal(dst, &dataBlock); err != nil {
 				return nil, err
 			}
 			break
@@ -154,8 +171,8 @@ func (s *TableDecoder) findDataBlock(key []byte) ([]byte, error) {
 	}
 
 	// binary search.
-	i, ok := slices.BinarySearchFunc(dataBlock.Keys, key, func(b1, b2 []byte) int {
-		return bytes.Compare(b1, b2)
+	i, ok := slices.BinarySearchFunc(dataBlock.Keys, key, func(a, b []byte) int {
+		return bytes.Compare(a, b)
 	})
 	if ok {
 		return dataBlock.Values[i], nil
@@ -164,38 +181,37 @@ func (s *TableDecoder) findDataBlock(key []byte) ([]byte, error) {
 	return nil, nil
 }
 
-// decodeDataBlock
-func (s *TableDecoder) decodeDataBlock() error {
-	for _, entry := range s.iblock.Entries {
+// decodeAll
+func (s *TableDecoder) decodeAll() (*arenaskl.Iterator, error) {
+	// create arena skiplist.
+	skl := arenaskl.NewSkiplist(arenaskl.NewArena(MemTableSize))
+	var it arenaskl.Iterator
+	it.Init(skl)
+
+	var dataBlock pb.DataBlock
+
+	for _, entry := range s.indexBlock.Entries {
 		// read
 		src, err := seekRead(s.fd, int64(entry.Offset), uint64(entry.Size), io.SeekStart)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		// decompress
 		dst, err := Decompress(src, nil)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
-		var dataBlock pb.DataBlock
 		if err = proto.Unmarshal(dst, &dataBlock); err != nil {
-			return err
+			return nil, err
+		}
+
+		// insert
+		for i, key := range dataBlock.Keys {
+			it.Add(key, dataBlock.Values[i], uint16(dataBlock.Types[i]))
 		}
 	}
-	return nil
-}
-
-// FindTable
-func FindTable(key []byte, path string) ([]byte, error) {
-	tableDecoder, err := NewTableDecoder(path)
-	if err != nil {
-		return nil, err
-	}
-	if err = tableDecoder.decodeIndexBlock(); err != nil {
-		return nil, err
-	}
-	return tableDecoder.findDataBlock(key)
+	return &it, nil
 }
 
 // seekRead first seek(offset, whence) and then read(size).
@@ -210,4 +226,40 @@ func seekRead(fs *os.File, offset int64, size uint64, whence int) ([]byte, error
 	}
 
 	return buf, nil
+}
+
+// Compact
+func Compact(paths ...string) (*arenaskl.Iterator, error) {
+	slices.Sort(paths)
+	skls := make([]*arenaskl.Iterator, 0, len(paths))
+
+	// decode all.
+	for _, path := range paths {
+		decoder, err := NewTableDecoder(path)
+		if err != nil {
+			return nil, err
+		}
+		defer decoder.Close()
+
+		if err = decoder.decodeIndexBlock(); err != nil {
+			return nil, err
+		}
+		it, err := decoder.decodeAll()
+		if err != nil {
+			return nil, err
+		}
+		skls = append(skls, it)
+	}
+
+	skl0 := skls[0]
+	// merge skiplists.
+	for _, it := range skls[1:] {
+		it.SeekToFirst()
+		for it.Valid() {
+			skl0.Add(it.Key(), it.Value(), uint16(it.Meta()))
+			it.Next()
+		}
+	}
+
+	return skl0, nil
 }
