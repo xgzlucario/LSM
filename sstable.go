@@ -3,38 +3,23 @@ package lsm
 import (
 	"bytes"
 	"encoding/binary"
+	"io"
+	"os"
+	"slices"
 
 	"github.com/xgzlucario/LSM/pb"
 	"google.golang.org/protobuf/proto"
 )
 
-/*
-   LevelDB SSTable format:
-                            +------------+
-	+-----------------+     |  entry[0]  | --> (shared_bytes, unshared_bytes, value_len, key_delta, value)
-	|  data_block[0]  | --> +------------+
-	+-----------------+     |  entry[1]  |
-	|  data_block[1]  |     +------------+
-	+-----------------+     |  ... ...   |
-	|     ... ...     |     +------------+
-	+-----------------+
-    |     (filter)    |
-	+-----------------+
-	|                 |     +-------------+-------------+-------------+----------------+
-    |    meta_index   | --> |  restarts0  |  restarts1  |   ... ...   |  restarts_len  |
-	|                 |     +-------------+-------------+-------------+----------------+
-    +-----------------+     +------------+
-    |                 |     |  entry[0]  | --one entry per block--> (last_key, offset, size)
-	|   index_block   | --> +------------+
-	|                 |     |  entry[1]  |
-	+-----------------+     +------------+
-    |     footer      |     |  ... ...   |
-    +-----------------+	    +------------+
+const (
+	footerSize = 8
+)
 
-	Get(key) -> footer -> index_block -> BlockHandle(offset, size) -> data_block -> entry(key, value)
-*/
+var (
+	order = binary.LittleEndian
+)
 
-type vtype byte
+type vtype = uint16
 
 const (
 	vtypeVal vtype = iota + 1
@@ -45,6 +30,7 @@ const (
 type SSTable struct {
 	*Config
 	*MemTable
+	// bloom *bloom.BloomFilter
 }
 
 // DumpTable
@@ -77,10 +63,10 @@ func (s *SSTable) DumpTable() []byte {
 
 		s.it.Next()
 
-		// encode data block.
+		// encode data blocks.
 		if dataBlock.Size >= s.DataBlockSize || !s.it.Valid() {
 			src, _ := proto.Marshal(dataBlock)
-			// TODO zstd compress here.
+			// TODO zstd
 			indexBlocks = append(indexBlocks, &pb.IndexBlockEntry{
 				LastKey: dataBlock.Keys[len(dataBlock.Keys)-1],
 				Offset:  uint32(buf.Len()),
@@ -88,29 +74,87 @@ func (s *SSTable) DumpTable() []byte {
 			})
 			buf.Write(src)
 
-			// break if invalid.
+			// break if end.
 			if !s.it.Valid() {
 				break
 			}
 		}
 	}
 
-	// encode index blocks.
-	indexSrc, _ := proto.Marshal(&pb.IndexBlock{Entries: indexBlocks})
+	// encode index block.
+	data, _ := proto.Marshal(&pb.IndexBlock{Entries: indexBlocks})
+	buf.Write(data)
 
 	// encode footer.
-	indexBlockOffset := uint64(buf.Len())
-	IndexBlockSize := uint64(len(indexSrc))
-
-	buf.Write(indexSrc)
-
-	binary.Write(buf, binary.LittleEndian, indexBlockOffset)
-	binary.Write(buf, binary.LittleEndian, IndexBlockSize)
+	IndexBlockSize := uint64(len(data))
+	binary.Write(buf, order, IndexBlockSize)
 
 	return buf.Bytes()
 }
 
 // FindSSTable
 func FindSSTable(key []byte, path string) ([]byte, error) {
+	fd, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer fd.Close()
+
+	// decode footer.
+	buf, err := seekRead(fd, -footerSize, footerSize, io.SeekEnd)
+	if err != nil {
+		return nil, err
+	}
+	indexBlockSize := order.Uint64(buf)
+
+	// decode index block.
+	buf, err = seekRead(fd, -int64(indexBlockSize+footerSize), indexBlockSize, io.SeekEnd)
+	if err != nil {
+		return nil, err
+	}
+	var indexBlock pb.IndexBlock
+	if err = proto.Unmarshal(buf, &indexBlock); err != nil {
+		return nil, err
+	}
+
+	// decode data block.
+	var dataBlock pb.DataBlock
+
+	for _, entry := range indexBlock.Entries {
+		if bytes.Compare(key, entry.LastKey) <= 0 {
+			// read
+			buf, err := seekRead(fd, int64(entry.Offset), uint64(entry.Size), io.SeekStart)
+			if err != nil {
+				return nil, err
+			}
+			if err = proto.Unmarshal(buf, &dataBlock); err != nil {
+				return nil, err
+			}
+			break
+		}
+	}
+
+	// binary search.
+	i, ok := slices.BinarySearchFunc(dataBlock.Keys, key, func(b1, b2 []byte) int {
+		return bytes.Compare(b1, b2)
+	})
+	if ok {
+		return dataBlock.Values[i], nil
+	}
+
 	return nil, nil
+}
+
+// seekRead first seek(offset, whence) and then read(size).
+func seekRead(fs *os.File, offset int64, size uint64, whence int) ([]byte, error) {
+	if _, err := fs.Seek(offset, whence); err != nil {
+		return nil, err
+	}
+
+	buf := make([]byte, size)
+	if _, err := fs.Read(buf); err != nil {
+		return nil, err
+	}
+
+	return buf, nil
 }

@@ -20,6 +20,5 @@ message IndexBlock {
 }
 
 message Footer {
-    uint64 indexBlockOffset = 1;
-    uint64 indexBlockSize = 2;
+    uint64 indexBlockSize = 1;
 }

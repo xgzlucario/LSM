@@ -1,23 +1,43 @@
 package lsm
 
 import (
+	"math"
+	"os"
 	"strconv"
 	"testing"
+	"time"
 )
 
 func TestSSTable(t *testing.T) {
-	cfg := DefaultConfig
+	memtable := NewMemTable(math.MaxUint32)
+	vmap := map[string]string{}
 
-	memtable := NewMemTable(cfg.MemTableSize)
-	for i := 0; i < 100; i++ {
-		k := []byte("key" + strconv.Itoa(i))
-		memtable.Put(k, k, vtypeVal)
+	// insert
+	for i := 0; i < 2000; i++ {
+		ts := time.Now().UnixNano()
+		k := strconv.Itoa(int(ts))
+		v := strconv.Itoa(int(ts))
+
+		vmap[k] = v
+		memtable.Put([]byte(k), []byte(v))
 	}
 
+	// dump
 	sstable := &SSTable{
-		Config:   cfg,
+		Config:   DefaultConfig,
 		MemTable: memtable,
 	}
+	src := sstable.DumpTable()
+	os.WriteFile("test.sst", src, 0644)
 
-	t.Error(sstable.DumpTable())
+	// find
+	for k, v := range vmap {
+		res, err := FindSSTable([]byte(k), "test.sst")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(res) != v {
+			t.Fatal("not equal")
+		}
+	}
 }

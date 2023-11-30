@@ -48,14 +48,14 @@ func NewLSM(cfg *Config) (*LSM, error) {
 
 // Put
 func (lsm *LSM) Put(key, value []byte) error {
-	// write wal
+	// write wal.
 	lsm.walIndex++
 	if err := lsm.wal.Write(lsm.walIndex, key); err != nil {
 		return err
 	}
 
-	// write memtable
-	if err := lsm.mt.Put(key, value, vtypeVal); err != nil {
+	// write memtable.
+	if err := lsm.mt.Put(key, value); err != nil {
 		return err
 	}
 

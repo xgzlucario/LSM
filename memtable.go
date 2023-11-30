@@ -39,11 +39,19 @@ func (mt *MemTable) Rotate() {
 }
 
 // Put a key-value pair to the memtable.
-func (mt *MemTable) Put(key, value []byte, vtype vtype) error {
+func (mt *MemTable) Put(key, value []byte) error {
 	if mt.immu {
 		panic("immutable")
 	}
-	return mt.it.Add(key, value, uint16(vtype))
+	return mt.it.Add(key, value, vtypeVal)
+}
+
+// Delete a key-value pair from the memtable.
+func (mt *MemTable) Delete(key []byte) error {
+	if mt.immu {
+		panic("immutable")
+	}
+	return mt.it.Add(key, nil, vtypeDel)
 }
 
 // Full

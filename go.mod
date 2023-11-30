@@ -7,6 +7,7 @@ require (
 	github.com/klauspost/compress v1.17.3
 	github.com/syndtr/goleveldb v1.0.0
 	github.com/tidwall/wal v1.1.7
+	google.golang.org/protobuf v1.31.0
 )
 
 require (
@@ -17,5 +18,4 @@ require (
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/tinylru v1.2.1 // indirect
-	google.golang.org/protobuf v1.31.0 // indirect
 )
