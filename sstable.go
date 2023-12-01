@@ -29,10 +29,15 @@ const (
 	vtypeDel
 )
 
-// TableDecoder
-type TableDecoder struct {
-	fd         *os.File
+// SSTable
+type SSTable struct {
+	fd *os.File
+
 	indexBlock pb.IndexBlock
+	dataBlock  pb.DataBlock
+
+	skl *arenaskl.Skiplist
+	it  *arenaskl.Iterator
 }
 
 // +-----------------+
@@ -49,49 +54,51 @@ type TableDecoder struct {
 // |     footer      | ---+
 // +-----------------+
 // DumpTable dumps a memtable to a sstable.
-func DumpTable(mt *MemTable) []byte {
+func DumpTable(it *arenaskl.Iterator) []byte {
 	buf := bytes.NewBuffer(make([]byte, 0, DataBlockSize))
 
 	dataBlock := new(pb.DataBlock)
-	indexBlocks := make([]*pb.IndexBlockEntry, 0)
+
+	// init indexBlock.
+	indexBlock := new(pb.IndexBlock)
+	it.SeekToLast()
+	indexBlock.LastKey = it.Key()
+	it.SeekToFirst()
+	indexBlock.FirstKey = it.Key()
 
 	// iter memtable.
-	mt.it.SeekToFirst()
 	for {
-		dataBlock.Keys = append(dataBlock.Keys, mt.it.Key())
-		dataBlock.Values = append(dataBlock.Values, mt.it.Value())
-		dataBlock.Types = append(dataBlock.Types, byte(mt.it.Meta()))
-		dataBlock.Size += uint32(len(mt.it.Key()) + len(mt.it.Value()) + 1)
+		dataBlock.Keys = append(dataBlock.Keys, it.Key())
+		dataBlock.Values = append(dataBlock.Values, it.Value())
+		dataBlock.Types = append(dataBlock.Types, byte(it.Meta()))
+		dataBlock.Size += uint32(len(it.Key()) + len(it.Value()) + 1)
 
-		mt.it.Next()
+		it.Next()
 
 		// encode data blocks.
-		if dataBlock.Size >= DataBlockSize || !mt.it.Valid() {
+		if dataBlock.Size >= DataBlockSize || !it.Valid() {
 			src, _ := proto.Marshal(dataBlock)
 			// compress.
 			dst := Compress(src, nil)
 
-			indexBlocks = append(indexBlocks, &pb.IndexBlockEntry{
+			indexBlock.Entries = append(indexBlock.Entries, &pb.IndexBlockEntry{
 				LastKey: dataBlock.Keys[len(dataBlock.Keys)-1],
 				Offset:  uint32(buf.Len()),
 				Size:    uint32(len(dst)),
 			})
 			buf.Write(dst)
 
-			// reset data block.
-			dataBlock.Keys = dataBlock.Keys[:0]
-			dataBlock.Values = dataBlock.Values[:0]
-			dataBlock.Types = dataBlock.Types[:0]
+			dataBlock.Reset()
 
 			// break if end.
-			if !mt.it.Valid() {
+			if !it.Valid() {
 				break
 			}
 		}
 	}
 
 	// encode index block.
-	data, _ := proto.Marshal(&pb.IndexBlock{Entries: indexBlocks})
+	data, _ := proto.Marshal(indexBlock)
 	buf.Write(data)
 
 	// encode footer.
@@ -101,36 +108,22 @@ func DumpTable(mt *MemTable) []byte {
 	return buf.Bytes()
 }
 
-// FindTable
-func FindTable(key []byte, path string) ([]byte, error) {
-	decoder, err := NewTableDecoder(path)
-	if err != nil {
-		return nil, err
-	}
-	defer decoder.Close()
-
-	if err = decoder.decodeIndexBlock(); err != nil {
-		return nil, err
-	}
-	return decoder.findKey(key)
-}
-
-// NewTableDecoder
-func NewTableDecoder(path string) (*TableDecoder, error) {
+// NewSSTable
+func NewSSTable(path string) (*SSTable, error) {
 	fd, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	return &TableDecoder{fd: fd}, nil
+	return &SSTable{fd: fd}, nil
 }
 
 // Close
-func (s *TableDecoder) Close() error {
+func (s *SSTable) Close() error {
 	return s.fd.Close()
 }
 
-// decodeIndexBlock
-func (s *TableDecoder) decodeIndexBlock() error {
+// decodeIndex decode index block.
+func (s *SSTable) decodeIndex() error {
 	buf, err := seekRead(s.fd, -footerSize, footerSize, io.SeekEnd)
 	if err != nil {
 		return err
@@ -152,9 +145,12 @@ func (s *TableDecoder) decodeIndexBlock() error {
 	return proto.Unmarshal(buf, &s.indexBlock)
 }
 
-// findKey
-func (s *TableDecoder) findKey(key []byte) ([]byte, error) {
-	var dataBlock pb.DataBlock
+// findKey return value by key.
+func (s *SSTable) findKey(key []byte) ([]byte, error) {
+	// decode index first.
+	if err := s.decodeIndex(); err != nil {
+		return nil, err
+	}
 
 	for _, entry := range s.indexBlock.Entries {
 		if bytes.Compare(key, entry.LastKey) <= 0 {
@@ -168,7 +164,7 @@ func (s *TableDecoder) findKey(key []byte) ([]byte, error) {
 			if err != nil {
 				return nil, err
 			}
-			if err = proto.Unmarshal(dst, &dataBlock); err != nil {
+			if err = proto.Unmarshal(dst, &s.dataBlock); err != nil {
 				return nil, err
 			}
 			break
@@ -176,47 +172,49 @@ func (s *TableDecoder) findKey(key []byte) ([]byte, error) {
 	}
 
 	// binary search.
-	i, ok := slices.BinarySearchFunc(dataBlock.Keys, key, func(a, b []byte) int {
+	i, ok := slices.BinarySearchFunc(s.dataBlock.Keys, key, func(a, b []byte) int {
 		return bytes.Compare(a, b)
 	})
 	if ok {
-		return dataBlock.Values[i], nil
+		return s.dataBlock.Values[i], nil
 	}
 
 	return nil, nil
 }
 
-// decodeAll
-func (s *TableDecoder) decodeAll() (*arenaskl.Iterator, error) {
-	// create arena skiplist.
-	skl := arenaskl.NewSkiplist(arenaskl.NewArena(MemTableSize))
-	var it arenaskl.Iterator
-	it.Init(skl)
+// decodeData decode all data blocks.
+func (s *SSTable) decodeData() error {
+	// decode index first.
+	if err := s.decodeIndex(); err != nil {
+		return err
+	}
 
-	var dataBlock pb.DataBlock
+	s.skl = arenaskl.NewSkiplist(arenaskl.NewArena(MemTableSize))
+	s.it = new(arenaskl.Iterator)
+	s.it.Init(s.skl)
 
 	for _, entry := range s.indexBlock.Entries {
 		// read
 		src, err := seekRead(s.fd, int64(entry.Offset), uint64(entry.Size), io.SeekStart)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		// decompress
 		dst, err := Decompress(src, nil)
 		if err != nil {
-			return nil, err
+			return err
 		}
 
-		if err = proto.Unmarshal(dst, &dataBlock); err != nil {
-			return nil, err
+		if err = proto.Unmarshal(dst, &s.dataBlock); err != nil {
+			return err
 		}
 
 		// insert
-		for i, key := range dataBlock.Keys {
-			it.Add(key, dataBlock.Values[i], uint16(dataBlock.Types[i]))
+		for i, key := range s.dataBlock.Keys {
+			s.it.Add(key, s.dataBlock.Values[i], uint16(s.dataBlock.Types[i]))
 		}
 	}
-	return &it, nil
+	return nil
 }
 
 // seekRead first seek(offset, whence) and then read(size).
@@ -231,4 +229,11 @@ func seekRead(fs *os.File, offset int64, size uint64, whence int) ([]byte, error
 	}
 
 	return buf, nil
+}
+
+// merge
+func (s *SSTable) merge(t *SSTable) {
+	for t.it.SeekToFirst(); t.it.Valid(); t.it.Next() {
+		s.it.Add(t.it.Key(), t.it.Value(), uint16(t.it.Meta()))
+	}
 }

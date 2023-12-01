@@ -13,7 +13,7 @@ func TestSSTable(t *testing.T) {
 	vmap := map[string]string{}
 
 	// insert
-	for i := 0; i < 2000; i++ {
+	for i := 0; i < 5000; i++ {
 		ts := time.Now().UnixNano()
 		k := strconv.Itoa(int(ts))
 		v := strconv.Itoa(int(ts))
@@ -23,7 +23,7 @@ func TestSSTable(t *testing.T) {
 	}
 
 	// dump
-	src := DumpTable(memtable)
+	src := DumpTable(memtable.it)
 	os.WriteFile("test.sst", src, 0644)
 
 	// find
@@ -38,7 +38,7 @@ func TestSSTable(t *testing.T) {
 	}
 
 	// error
-	for i := 0; i < 2000; i++ {
+	for i := 0; i < 5000; i++ {
 		ts := time.Now().UnixNano()
 		k := strconv.Itoa(int(ts))
 		res, err := FindTable([]byte(k), "test.sst")

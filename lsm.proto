@@ -16,9 +16,7 @@ message IndexBlockEntry {
 }
 
 message IndexBlock {
-    repeated IndexBlockEntry entries = 1;
-}
-
-message Footer {
-    uint64 indexBlockSize = 1;
+    bytes firstKey = 1;
+    bytes lastKey = 2;
+    repeated IndexBlockEntry entries = 3;
 }
