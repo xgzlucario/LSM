@@ -78,6 +78,11 @@ func DumpTable(mt *MemTable) []byte {
 			})
 			buf.Write(dst)
 
+			// reset data block.
+			dataBlock.Keys = dataBlock.Keys[:0]
+			dataBlock.Values = dataBlock.Values[:0]
+			dataBlock.Types = dataBlock.Types[:0]
+
 			// break if end.
 			if !mt.it.Valid() {
 				break
@@ -89,7 +94,7 @@ func DumpTable(mt *MemTable) []byte {
 	data, _ := proto.Marshal(&pb.IndexBlock{Entries: indexBlocks})
 	buf.Write(data)
 
-	// encode footer[indexBlockSize, crc].
+	// encode footer.
 	binary.Write(buf, order, uint64(len(data)))
 	binary.Write(buf, order, crc32.ChecksumIEEE(data))
 
@@ -226,40 +231,4 @@ func seekRead(fs *os.File, offset int64, size uint64, whence int) ([]byte, error
 	}
 
 	return buf, nil
-}
-
-// Compact
-func Compact(paths ...string) (*arenaskl.Iterator, error) {
-	slices.Sort(paths)
-	skls := make([]*arenaskl.Iterator, 0, len(paths))
-
-	// decode all.
-	for _, path := range paths {
-		decoder, err := NewTableDecoder(path)
-		if err != nil {
-			return nil, err
-		}
-		defer decoder.Close()
-
-		if err = decoder.decodeIndexBlock(); err != nil {
-			return nil, err
-		}
-		it, err := decoder.decodeAll()
-		if err != nil {
-			return nil, err
-		}
-		skls = append(skls, it)
-	}
-
-	skl0 := skls[0]
-	// merge skiplists.
-	for _, it := range skls[1:] {
-		it.SeekToFirst()
-		for it.Valid() {
-			skl0.Add(it.Key(), it.Value(), uint16(it.Meta()))
-			it.Next()
-		}
-	}
-
-	return skl0, nil
 }

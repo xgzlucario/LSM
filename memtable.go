@@ -45,5 +45,5 @@ func (mt *MemTable) Delete(key []byte) error {
 
 // Full
 func (mt *MemTable) Full() bool {
-	return mt.skl.Arena().Size() >= mt.skl.Arena().Cap()/2
+	return mt.skl.Arena().Size() >= uint32(0.9*float64(mt.skl.Arena().Cap()))
 }

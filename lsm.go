@@ -1,21 +1,22 @@
 package lsm
 
 import (
+	"context"
 	"fmt"
 	"os"
-	"path"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/tidwall/wal"
+	"log"
 )
 
 // configuration for LSM-Tree.
 var (
-	MemTableSize  uint32 = 2 * MB
+	MemTableSize  uint32 = 4 * MB
 	DataBlockSize uint32 = 4 * KB
 
-	Level0MaxTables = 4
+	Level0MaxTables = 8
 
 	MinorCompactInterval = 10 * time.Second
 	MajorCompactInterval = 10 * time.Minute
@@ -26,35 +27,36 @@ type LSM struct {
 	sync.Mutex
 	path string
 
-	mt  *MemTable
-	imt []*MemTable // immutable memtables.
+	ctx    context.Context
+	cancel context.CancelFunc
 
-	walIndex uint64
-	wal      *wal.Log // wal log.
+	mt *MemTable
 }
 
 // NewLSM
 func NewLSM(dir string) (*LSM, error) {
-	log, err := wal.Open(path.Join(dir, "wal"), nil)
-	if err != nil {
-		return nil, err
+	os.MkdirAll(dir, 0755)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	lsm := &LSM{
+		path:   dir,
+		ctx:    ctx,
+		cancel: cancel,
+		mt:     NewMemTable(),
 	}
 
-	lsm := &LSM{
-		path: dir,
-		mt:   NewMemTable(),
-		wal:  log,
-	}
+	// start minor compaction.
 	go func() {
 		for {
-			time.Sleep(MinorCompactInterval)
-			lsm.MinorCompact()
-		}
-	}()
-	go func() {
-		for {
-			time.Sleep(MajorCompactInterval)
-			lsm.MajorCompact()
+			select {
+			case <-time.After(MajorCompactInterval):
+				if err := lsm.MajorCompact(); err != nil {
+					log.Fatal(err)
+				}
+
+			case <-lsm.ctx.Done():
+				return
+			}
 		}
 	}()
 
@@ -63,53 +65,69 @@ func NewLSM(dir string) (*LSM, error) {
 
 // Put
 func (lsm *LSM) Put(key, value []byte) error {
-	// write wal.
-	lsm.walIndex++
-	if err := lsm.wal.Write(lsm.walIndex, key); err != nil {
-		return err
-	}
-
-	lsm.Lock()
-	defer lsm.Unlock()
-
-	// write memtable.
 	if err := lsm.mt.Put(key, value); err != nil {
 		return err
 	}
 
-	// if memtable is full, turn to immutable.
+	// if memtable is full, write to disk.
 	if lsm.mt.Full() {
-		lsm.imt = append(lsm.imt, lsm.mt)
+		lsm.Lock()
+		oldmt := lsm.mt
 		lsm.mt = NewMemTable()
+		lsm.Unlock()
+
+		go lsm.MinorCompact(oldmt)
 	}
 
 	return nil
 }
 
-// MinorCompact
-func (lsm *LSM) MinorCompact() error {
-	lsm.Lock()
-	defer lsm.Unlock()
+// Get
+func (lsm *LSM) Get(key []byte) ([]byte, error) {
+	return nil, nil
+}
 
-	// write current memtable.
-	lsm.imt = append(lsm.imt, lsm.mt)
-	lsm.mt = NewMemTable()
-
-	for _, mt := range lsm.imt {
-		name := fmt.Sprintf("%s/L0-%d.sst", lsm.path, time.Now().UnixNano())
-		if err := os.WriteFile(name, DumpTable(mt), 0644); err != nil {
-			return err
-		}
+// Close
+func (lsm *LSM) Close() error {
+	select {
+	case <-lsm.ctx.Done():
+		return nil
+	default:
+		lsm.cancel()
 	}
-	lsm.imt = lsm.imt[:0]
-
 	return nil
+}
+
+// MinorCompact
+func (lsm *LSM) MinorCompact(mt *MemTable) {
+	name := fmt.Sprintf("%s/L0-%d.sst", lsm.path, time.Now().UnixNano())
+	if err := os.WriteFile(name, DumpTable(mt), 0644); err != nil {
+		panic(err)
+	}
 }
 
 // MajorCompact
 func (lsm *LSM) MajorCompact() error {
 	lsm.Lock()
 	defer lsm.Unlock()
+
+	// find all tables in level0.
+	tables := make([]*MetaTable, 0, Level0MaxTables)
+
+	files, err := os.ReadDir(lsm.path)
+	if err != nil {
+		return err
+	}
+	for _, file := range files {
+		if strings.HasPrefix(file.Name(), "L0") {
+			tables = append(tables, &MetaTable{
+				Level: 0,
+				Name:  file.Name(),
+			})
+		}
+	}
+
+	// TODO: add firstKey lastKey in indexBlock
 
 	return nil
 }
