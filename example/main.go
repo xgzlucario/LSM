@@ -1,9 +1,9 @@
 package main
 
 import (
-	"strconv"
 	"time"
 
+	"github.com/brianvoe/gofakeit/v6"
 	lsm "github.com/xgzlucario/LSM"
 )
 
@@ -27,9 +27,9 @@ func main() {
 	}
 
 	for i := 0; ; i++ {
-		k := []byte("key" + strconv.Itoa(i))
+		k := []byte(gofakeit.Phone())
 		lsm.Put(k, k)
 
-		time.Sleep(time.Microsecond)
+		time.Sleep(time.Microsecond / 10)
 	}
 }

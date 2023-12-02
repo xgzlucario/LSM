@@ -29,7 +29,9 @@ type SSTable struct {
 	fd         *os.File
 	m          *MemTable
 	indexBlock pb.IndexBlock
-	dataBlock  pb.DataBlock
+
+	dataDecoded bool
+	dataBlock   pb.DataBlock
 }
 
 // +-----------------+
@@ -98,13 +100,19 @@ func EncodeTable(m *MemTable) []byte {
 	return buf.Bytes()
 }
 
-// NewSSTable
+// NewSSTable create a sstable with decode index.
 func NewSSTable(path string) (*SSTable, error) {
 	fd, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	return &SSTable{fd: fd}, nil
+
+	table := &SSTable{fd: fd}
+	if err := table.decodeIndex(); err != nil {
+		return nil, err
+	}
+
+	return table, nil
 }
 
 // Close
@@ -137,11 +145,6 @@ func (s *SSTable) decodeIndex() error {
 
 // findKey return value by find sstable on disk.
 func (s *SSTable) findKey(key []byte) ([]byte, error) {
-	// decode index first.
-	if err := s.decodeIndex(); err != nil {
-		return nil, err
-	}
-
 	for _, entry := range s.indexBlock.Entries {
 		if bytes.Compare(key, entry.LastKey) <= 0 {
 			// read
@@ -174,10 +177,10 @@ func (s *SSTable) findKey(key []byte) ([]byte, error) {
 
 // decodeData decode all data blocks.
 func (s *SSTable) decodeData() error {
-	// decode index first.
-	if err := s.decodeIndex(); err != nil {
-		return err
+	if s.dataDecoded {
+		return nil
 	}
+	s.dataDecoded = true
 	s.m = NewMemTable()
 
 	for _, entry := range s.indexBlock.Entries {
@@ -220,5 +223,12 @@ func seekRead(fs *os.File, offset int64, size uint64, whence int) ([]byte, error
 
 // merge
 func (s *SSTable) merge(t *SSTable) {
+	if err := s.decodeData(); err != nil {
+		panic(err)
+	}
+	if err := t.decodeData(); err != nil {
+		panic(err)
+	}
+
 	s.m.Merge(t.m)
 }

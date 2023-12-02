@@ -74,9 +74,9 @@ func (m *MemTable) LastKey() []byte {
 	return m.it.Key()
 }
 
-// Merge
+// Merge merge m2 to m, m2 is the newest table.
 func (m *MemTable) Merge(m2 *MemTable) {
-	for m.it.SeekToFirst(); m.it.Valid(); m.it.Next() {
-		m.it.Add(m.it.Key(), m.it.Value(), m.it.Meta())
+	for m2.it.SeekToFirst(); m2.it.Valid(); m2.it.Next() {
+		m.it.Add(m2.it.Key(), m2.it.Value(), m2.it.Meta())
 	}
 }

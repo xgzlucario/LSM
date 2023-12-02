@@ -25,7 +25,7 @@ var (
 	Level0MaxTables = 8
 
 	MinorCompactInterval = time.Second
-	MajorCompactInterval = 10 * time.Second
+	MajorCompactInterval = 5 * time.Second
 )
 
 // LSM-Tree defination.
@@ -96,9 +96,10 @@ func (lsm *LSM) Put(key, value []byte) error {
 
 	// if memtable is full, rotate to immutable.
 	if lsm.mt.Full() {
+		m := NewMemTable()
 		lsm.Lock()
 		lsm.imt = append(lsm.imt, lsm.mt)
-		lsm.mt = NewMemTable()
+		lsm.mt = m
 		lsm.Unlock()
 	}
 
@@ -152,11 +153,11 @@ func (lsm *LSM) loadLevelTables(level int) ([]*SSTable, error) {
 
 	// filter.
 	prefix := fmt.Sprintf("L%d", level)
-	files = slices.DeleteFunc(files, func(a fs.DirEntry) bool {
-		return !strings.HasPrefix(a.Name(), prefix)
+	files = slices.DeleteFunc(files, func(fs fs.DirEntry) bool {
+		return !strings.HasPrefix(fs.Name(), prefix)
 	})
-	slices.SortFunc(files, func(a, b fs.DirEntry) int {
-		return strings.Compare(a.Name(), b.Name())
+	slices.SortFunc(files, func(f1, f2 fs.DirEntry) int {
+		return strings.Compare(f1.Name(), f2.Name())
 	})
 
 	// load tables.
@@ -166,9 +167,7 @@ func (lsm *LSM) loadLevelTables(level int) ([]*SSTable, error) {
 		if err != nil {
 			return nil, err
 		}
-		defer sst.Close()
-
-		if err := sst.decodeData(); err != nil {
+		if err := sst.decodeIndex(); err != nil {
 			return nil, err
 		}
 		tables = append(tables, sst)
@@ -179,6 +178,7 @@ func (lsm *LSM) loadLevelTables(level int) ([]*SSTable, error) {
 
 // MajorCompact
 func (lsm *LSM) MajorCompact() error {
+	// tables for current level.
 	tables, err := lsm.loadLevelTables(0)
 	if err != nil {
 		return err
@@ -187,7 +187,7 @@ func (lsm *LSM) MajorCompact() error {
 		return nil
 	}
 
-	// merge tables.
+	// for level0, merge all tables.
 	t0 := tables[0]
 	for _, table := range tables[1:] {
 		t0.merge(table)
