@@ -28,6 +28,8 @@ func TestSSTable(t *testing.T) {
 
 	// decodeAll
 	sst, _ := NewSSTable("test.sst")
+	defer sst.Close()
+
 	sst.decodeData()
 	for k, v := range vmap {
 		res, err := sst.m.Get([]byte(k))

@@ -8,7 +8,7 @@ const (
 	GB = 1 << 30
 )
 
-// MemTable
+// Memable
 type MemTable struct {
 	skl *arenaskl.Skiplist
 	it  *arenaskl.Iterator
@@ -32,58 +32,51 @@ func NewMemTable(sizes ...uint32) *MemTable {
 }
 
 // Get
-func (mt *MemTable) Get(key []byte) ([]byte, error) {
-	mt.it.Seek(key)
+func (m *MemTable) Get(key []byte) ([]byte, error) {
+	m.it.Seek(key)
 
-	if !mt.it.Valid() || mt.it.Meta() == vtypeDel {
+	if !m.it.Valid() || m.it.Meta() == vtypeDel {
 		return nil, ErrKeyNotFound
 	}
 
-	return mt.it.Value(), nil
+	return m.it.Value(), nil
 }
 
 // PutRaw
-func (mt *MemTable) PutRaw(key, value []byte, vtype uint16) error {
-	return mt.it.Add(key, value, vtype)
+func (m *MemTable) PutRaw(key, value []byte, vtype uint16) error {
+	return m.it.Add(key, value, vtype)
 }
 
-// Put a key-value pair to the memtable.
-func (mt *MemTable) Put(key, value []byte) error {
-	return mt.it.Add(key, value, vtypeVal)
+// Put insert key-value pair to the memable.
+func (m *MemTable) Put(key, value []byte) error {
+	return m.it.Add(key, value, vtypeVal)
 }
 
-// Delete a key-value pair from the memtable.
-func (mt *MemTable) Delete(key []byte) error {
-	return mt.it.Add(key, nil, vtypeDel)
+// Delete insert a tombstone to the memable.
+func (m *MemTable) Delete(key []byte) error {
+	return m.it.Add(key, nil, vtypeDel)
 }
 
 // Full
-func (mt *MemTable) Full() bool {
-	return mt.skl.Arena().Size() >= uint32(0.9*float64(mt.skl.Arena().Cap()))
+func (m *MemTable) Full() bool {
+	return m.skl.Arena().Size() >= uint32(0.9*float64(m.skl.Arena().Cap()))
 }
 
 // FirstKey
-func (mt *MemTable) FirstKey() []byte {
-	mt.it.SeekToFirst()
-	return mt.it.Key()
+func (m *MemTable) FirstKey() []byte {
+	m.it.SeekToFirst()
+	return m.it.Key()
 }
 
 // LastKey
-func (mt *MemTable) LastKey() []byte {
-	mt.it.SeekToLast()
-	return mt.it.Key()
-}
-
-// Iter
-func (mt *MemTable) Iter(f func([]byte, []byte, uint16)) {
-	for mt.it.SeekToFirst(); mt.it.Valid(); mt.it.Next() {
-		f(mt.it.Key(), mt.it.Value(), mt.it.Meta())
-	}
+func (m *MemTable) LastKey() []byte {
+	m.it.SeekToLast()
+	return m.it.Key()
 }
 
 // Merge
 func (m *MemTable) Merge(m2 *MemTable) {
-	m.Iter(func(key []byte, value []byte, meta uint16) {
-		m.it.Add(key, value, meta)
-	})
+	for m.it.SeekToFirst(); m.it.Valid(); m.it.Next() {
+		m.it.Add(m.it.Key(), m.it.Value(), m.it.Meta())
+	}
 }

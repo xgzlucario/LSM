@@ -15,17 +15,13 @@ import (
 const (
 	// footer contains [index_block_size, crc].
 	footerSize = 8 + 4
+
+	vtypeVal uint16 = 1
+	vtypeDel uint16 = 2
 )
 
 var (
 	order = binary.LittleEndian
-)
-
-type vtype = uint16
-
-const (
-	vtypeVal vtype = iota + 1
-	vtypeDel
 )
 
 // SSTable
@@ -49,10 +45,9 @@ type SSTable struct {
 // +-----------------+    |1
 // |     footer      | ---+
 // +-----------------+
-// EncodeTable dumps a memtable to a sstable.
+// EncodeTable encode a memtable to bytes.
 func EncodeTable(m *MemTable) []byte {
 	buf := bytes.NewBuffer(make([]byte, 0, DataBlockSize))
-	it := m.it
 
 	// initial.
 	dataBlock := new(pb.DataBlock)
@@ -62,32 +57,35 @@ func EncodeTable(m *MemTable) []byte {
 	}
 
 	// encode data block.
-	do := func() {
-		src, _ := proto.Marshal(dataBlock)
-		dst := Compress(src, nil)
+	for m.it.SeekToFirst(); ; {
+		dataBlock.Keys = append(dataBlock.Keys, m.it.Key())
+		dataBlock.Values = append(dataBlock.Values, m.it.Value())
+		dataBlock.Types = append(dataBlock.Types, byte(m.it.Meta()))
+		dataBlock.Size += uint32(len(m.it.Key()) + len(m.it.Value()) + 1)
 
-		indexBlock.Entries = append(indexBlock.Entries, &pb.IndexBlockEntry{
-			LastKey: dataBlock.Keys[len(dataBlock.Keys)-1],
-			Offset:  uint32(buf.Len()),
-			Size:    uint32(len(dst)),
-		})
-		buf.Write(dst)
-
-		dataBlock.Reset()
-	}
-
-	m.Iter(func(key, value []byte, meta uint16) {
-		dataBlock.Keys = append(dataBlock.Keys, it.Key())
-		dataBlock.Values = append(dataBlock.Values, it.Value())
-		dataBlock.Types = append(dataBlock.Types, byte(it.Meta()))
-		dataBlock.Size += uint32(len(it.Key()) + len(it.Value()) + 1)
+		m.it.Next()
 
 		// encode data blocks.
-		if dataBlock.Size >= DataBlockSize {
-			do()
+		if dataBlock.Size >= DataBlockSize || !m.it.Valid() {
+			src, _ := proto.Marshal(dataBlock)
+			// compress.
+			dst := Compress(src, nil)
+
+			indexBlock.Entries = append(indexBlock.Entries, &pb.IndexBlockEntry{
+				LastKey: dataBlock.Keys[len(dataBlock.Keys)-1],
+				Offset:  uint32(buf.Len()),
+				Size:    uint32(len(dst)),
+			})
+			buf.Write(dst)
+
+			dataBlock.Reset()
+
+			// break if end.
+			if !m.it.Valid() {
+				break
+			}
 		}
-	})
-	do()
+	}
 
 	// encode index block.
 	data, _ := proto.Marshal(indexBlock)
@@ -137,7 +135,7 @@ func (s *SSTable) decodeIndex() error {
 	return proto.Unmarshal(buf, &s.indexBlock)
 }
 
-// findKey return value by key.
+// findKey return value by find sstable on disk.
 func (s *SSTable) findKey(key []byte) ([]byte, error) {
 	// decode index first.
 	if err := s.decodeIndex(); err != nil {

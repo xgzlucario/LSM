@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,7 +36,8 @@ type LSM struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mt *MemTable
+	mt  *MemTable
+	imt []*MemTable
 
 	logger *slog.Logger
 }
@@ -57,6 +59,19 @@ func NewLSM(dir string) (*LSM, error) {
 	go func() {
 		for {
 			select {
+			case <-time.After(MinorCompactInterval):
+				lsm.MinorCompact()
+
+			case <-lsm.ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// start major compaction.
+	go func() {
+		for {
+			select {
 			case <-time.After(MajorCompactInterval):
 				if err := lsm.MajorCompact(); err != nil {
 					log.Fatal(err)
@@ -68,6 +83,8 @@ func NewLSM(dir string) (*LSM, error) {
 		}
 	}()
 
+	lsm.logger.Info("LSM-Tree started.")
+
 	return lsm, nil
 }
 
@@ -77,14 +94,12 @@ func (lsm *LSM) Put(key, value []byte) error {
 		return err
 	}
 
-	// if memtable is full, write to disk.
+	// if memtable is full, rotate to immutable.
 	if lsm.mt.Full() {
 		lsm.Lock()
-		oldmt := lsm.mt
+		lsm.imt = append(lsm.imt, lsm.mt)
 		lsm.mt = NewMemTable()
 		lsm.Unlock()
-
-		go lsm.MinorCompact(oldmt)
 	}
 
 	return nil
@@ -106,9 +121,9 @@ func (lsm *LSM) Close() error {
 	return nil
 }
 
-// DumpTable
-func (lsm *LSM) DumpTable(level int, m *MemTable) error {
-	tableName := fmt.Sprintf("L%d-%d.sst", level, time.Now().UnixNano())
+// dumpTable
+func (lsm *LSM) dumpTable(level int, m *MemTable) error {
+	tableName := fmt.Sprintf("L%d-%s.sst", level, strconv.FormatInt(time.Now().UnixNano(), 36))
 	// log
 	lsm.logger.Info(fmt.Sprintf("[MinorCompact] save %s", tableName))
 
@@ -116,13 +131,16 @@ func (lsm *LSM) DumpTable(level int, m *MemTable) error {
 }
 
 // MinorCompact
-func (lsm *LSM) MinorCompact(m *MemTable) {
-	if m.skl.Size() == 0 {
-		return
+func (lsm *LSM) MinorCompact() {
+	lsm.Lock()
+	defer lsm.Unlock()
+
+	for _, m := range lsm.imt {
+		if err := lsm.dumpTable(0, m); err != nil {
+			panic(err)
+		}
 	}
-	if err := lsm.DumpTable(0, m); err != nil {
-		panic(err)
-	}
+	lsm.imt = lsm.imt[:0]
 }
 
 // loadLevelTables
@@ -179,7 +197,7 @@ func (lsm *LSM) MajorCompact() error {
 	defer lsm.Unlock()
 
 	// dump table.
-	if err := lsm.DumpTable(1, t0.m); err != nil {
+	if err := lsm.dumpTable(1, t0.m); err != nil {
 		panic(err)
 	}
 
