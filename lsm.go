@@ -1,7 +1,6 @@
 package lsm
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io/fs"
@@ -30,8 +29,10 @@ var (
 
 // LSM-Tree defination.
 type LSM struct {
-	sync.Mutex
 	path string
+
+	fileLocker sync.Mutex
+	mtLocker   sync.Mutex
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -97,10 +98,10 @@ func (lsm *LSM) Put(key, value []byte) error {
 	// if memtable is full, rotate to immutable.
 	if lsm.mt.Full() {
 		m := NewMemTable()
-		lsm.Lock()
+		lsm.mtLocker.Lock()
 		lsm.imt = append(lsm.imt, lsm.mt)
 		lsm.mt = m
-		lsm.Unlock()
+		lsm.mtLocker.Unlock()
 	}
 
 	return nil
@@ -133,8 +134,8 @@ func (lsm *LSM) dumpTable(level int, m *MemTable) error {
 
 // MinorCompact
 func (lsm *LSM) MinorCompact() {
-	lsm.Lock()
-	defer lsm.Unlock()
+	lsm.mtLocker.Lock()
+	defer lsm.mtLocker.Unlock()
 
 	for _, m := range lsm.imt {
 		if err := lsm.dumpTable(0, m); err != nil {
@@ -144,8 +145,8 @@ func (lsm *LSM) MinorCompact() {
 	lsm.imt = lsm.imt[:0]
 }
 
-// loadLevelTables
-func (lsm *LSM) loadLevelTables(level int) ([]*SSTable, error) {
+// loadTables
+func (lsm *LSM) loadTables(level int) ([]*SSTable, error) {
 	files, err := os.ReadDir(lsm.path)
 	if err != nil {
 		return nil, err
@@ -153,6 +154,7 @@ func (lsm *LSM) loadLevelTables(level int) ([]*SSTable, error) {
 
 	// filter.
 	prefix := fmt.Sprintf("L%d", level)
+
 	files = slices.DeleteFunc(files, func(fs fs.DirEntry) bool {
 		return !strings.HasPrefix(fs.Name(), prefix)
 	})
@@ -167,9 +169,6 @@ func (lsm *LSM) loadLevelTables(level int) ([]*SSTable, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := sst.decodeIndex(); err != nil {
-			return nil, err
-		}
 		tables = append(tables, sst)
 	}
 
@@ -178,8 +177,20 @@ func (lsm *LSM) loadLevelTables(level int) ([]*SSTable, error) {
 
 // MajorCompact
 func (lsm *LSM) MajorCompact() error {
+	if err := lsm.CompactLevel0(); err != nil {
+		return err
+	}
+	for level := 1; ; level++ {
+		if n, err := lsm.CompactLevelN(level); n == 0 || err != nil {
+			return err
+		}
+	}
+}
+
+// CompactLevel0
+func (lsm *LSM) CompactLevel0() error {
 	// tables for current level.
-	tables, err := lsm.loadLevelTables(0)
+	tables, err := lsm.loadTables(0)
 	if err != nil {
 		return err
 	}
@@ -190,11 +201,11 @@ func (lsm *LSM) MajorCompact() error {
 	// for level0, merge all tables.
 	t0 := tables[0]
 	for _, table := range tables[1:] {
-		t0.merge(table)
+		t0.Merge(table)
 	}
 
-	lsm.Lock()
-	defer lsm.Unlock()
+	lsm.fileLocker.Lock()
+	defer lsm.fileLocker.Unlock()
 
 	// dump table.
 	if err := lsm.dumpTable(1, t0.m); err != nil {
@@ -211,6 +222,64 @@ func (lsm *LSM) MajorCompact() error {
 	return nil
 }
 
+// CompactLevelN
+func (lsm *LSM) CompactLevelN(level int) (mergedNum int, err error) {
+	// tables for current level.
+	tables, err := lsm.loadTables(level)
+	if err != nil {
+		return 0, err
+	}
+	if len(tables) <= 1 {
+		return 0, nil
+	}
+
+	lsm.fileLocker.Lock()
+	defer lsm.fileLocker.Unlock()
+
+	for i := range tables {
+		t1 := tables[i]
+		if t1 == nil {
+			return
+		}
+
+		merged := false
+
+		for j := i + 1; j < len(tables); j++ {
+			t2 := tables[j]
+			if t2 == nil {
+				return
+			}
+
+			if t1.IsOverlap(t2) {
+				t1.Merge(t2)
+
+				// if table is merged, remove it.
+				tables[j] = nil
+				if err := os.Remove(t2.fd.Name()); err != nil {
+					return 0, err
+				}
+
+				merged = true
+				mergedNum++
+			}
+		}
+
+		if merged {
+			// dump table.
+			if err := lsm.dumpTable(level+1, t1.m); err != nil {
+				panic(err)
+			}
+
+			// remmove old table.
+			if err := os.Remove(t1.fd.Name()); err != nil {
+				return 0, err
+			}
+		}
+	}
+
+	return
+}
+
 // FindTable
 func FindTable(key []byte, path string) ([]byte, error) {
 	table, err := NewSSTable(path)
@@ -220,15 +289,4 @@ func FindTable(key []byte, path string) ([]byte, error) {
 	defer table.Close()
 
 	return table.findKey(key)
-}
-
-// IsOverlap
-func (t *SSTable) IsOverlap(n *SSTable) bool {
-	if bytes.Compare(t.indexBlock.FirstKey, n.indexBlock.FirstKey) <= 0 &&
-		bytes.Compare(n.indexBlock.FirstKey, t.indexBlock.LastKey) <= 0 {
-		return true
-	}
-
-	return bytes.Compare(n.indexBlock.FirstKey, t.indexBlock.FirstKey) <= 0 &&
-		bytes.Compare(t.indexBlock.FirstKey, n.indexBlock.LastKey) <= 0
 }

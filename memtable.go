@@ -35,7 +35,7 @@ func NewMemTable(sizes ...uint32) *MemTable {
 func (m *MemTable) Get(key []byte) ([]byte, error) {
 	m.it.Seek(key)
 
-	if !m.it.Valid() || m.it.Meta() == vtypeDel {
+	if !m.it.Valid() || m.it.Meta() == typeDel {
 		return nil, ErrKeyNotFound
 	}
 
@@ -49,12 +49,12 @@ func (m *MemTable) PutRaw(key, value []byte, vtype uint16) error {
 
 // Put insert key-value pair to the memable.
 func (m *MemTable) Put(key, value []byte) error {
-	return m.it.Add(key, value, vtypeVal)
+	return m.it.Add(key, value, typeVal)
 }
 
 // Delete insert a tombstone to the memable.
 func (m *MemTable) Delete(key []byte) error {
-	return m.it.Add(key, nil, vtypeDel)
+	return m.it.Add(key, nil, typeDel)
 }
 
 // Full

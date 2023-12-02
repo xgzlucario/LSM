@@ -13,11 +13,10 @@ import (
 )
 
 const (
-	// footer contains [index_block_size, crc].
-	footerSize = 8 + 4
+	typeVal uint16 = 1
+	typeDel uint16 = 2
 
-	vtypeVal uint16 = 1
-	vtypeDel uint16 = 2
+	footerSize = 8 + 4
 )
 
 var (
@@ -32,6 +31,12 @@ type SSTable struct {
 
 	dataDecoded bool
 	dataBlock   pb.DataBlock
+}
+
+// Footer
+type Footer struct {
+	IndexBlockSize uint64
+	CRC            uint32
 }
 
 // +-----------------+
@@ -94,8 +99,10 @@ func EncodeTable(m *MemTable) []byte {
 	buf.Write(data)
 
 	// encode footer.
-	binary.Write(buf, order, uint64(len(data)))
-	binary.Write(buf, order, crc32.ChecksumIEEE(data))
+	binary.Write(buf, order, Footer{
+		IndexBlockSize: uint64(len(data)),
+		CRC:            crc32.ChecksumIEEE(data),
+	})
 
 	return buf.Bytes()
 }
@@ -126,17 +133,21 @@ func (s *SSTable) decodeIndex() error {
 	if err != nil {
 		return err
 	}
-	indexBlockSize := order.Uint64(buf)
-	crc := order.Uint32(buf[8:])
+
+	// decode footer.
+	var footer Footer
+	if err := binary.Read(bytes.NewReader(buf), order, &footer); err != nil {
+		return err
+	}
 
 	// decode index block.
-	buf, err = seekRead(s.fd, -int64(indexBlockSize+footerSize), indexBlockSize, io.SeekEnd)
+	buf, err = seekRead(s.fd, -int64(footer.IndexBlockSize+footerSize), footer.IndexBlockSize, io.SeekEnd)
 	if err != nil {
 		return err
 	}
 
 	// check crc.
-	if crc32.ChecksumIEEE(buf) != crc {
+	if crc32.ChecksumIEEE(buf) != footer.CRC {
 		return ErrCRCChecksum
 	}
 
@@ -181,7 +192,7 @@ func (s *SSTable) decodeData() error {
 		return nil
 	}
 	s.dataDecoded = true
-	s.m = NewMemTable()
+	s.m = NewMemTable(MemTableSize)
 
 	for _, entry := range s.indexBlock.Entries {
 		// read
@@ -222,13 +233,23 @@ func seekRead(fs *os.File, offset int64, size uint64, whence int) ([]byte, error
 }
 
 // merge
-func (s *SSTable) merge(t *SSTable) {
+func (s *SSTable) Merge(t *SSTable) {
 	if err := s.decodeData(); err != nil {
 		panic(err)
 	}
 	if err := t.decodeData(); err != nil {
 		panic(err)
 	}
-
 	s.m.Merge(t.m)
+}
+
+// IsOverlap
+func (t *SSTable) IsOverlap(n *SSTable) bool {
+	if bytes.Compare(t.indexBlock.FirstKey, n.indexBlock.FirstKey) <= 0 &&
+		bytes.Compare(n.indexBlock.FirstKey, t.indexBlock.LastKey) <= 0 {
+		return true
+	}
+
+	return bytes.Compare(n.indexBlock.FirstKey, t.indexBlock.FirstKey) <= 0 &&
+		bytes.Compare(t.indexBlock.FirstKey, n.indexBlock.LastKey) <= 0
 }
