@@ -8,7 +8,6 @@ import (
 	"os"
 	"slices"
 
-	"github.com/andy-kimball/arenaskl"
 	"github.com/xgzlucario/LSM/pb"
 	"google.golang.org/protobuf/proto"
 )
@@ -31,13 +30,10 @@ const (
 
 // SSTable
 type SSTable struct {
-	fd *os.File
-
+	fd         *os.File
+	m          *MemTable
 	indexBlock pb.IndexBlock
 	dataBlock  pb.DataBlock
-
-	skl *arenaskl.Skiplist
-	it  *arenaskl.Iterator
 }
 
 // +-----------------+
@@ -53,49 +49,45 @@ type SSTable struct {
 // +-----------------+    |1
 // |     footer      | ---+
 // +-----------------+
-// DumpTable dumps a memtable to a sstable.
-func DumpTable(it *arenaskl.Iterator) []byte {
+// EncodeTable dumps a memtable to a sstable.
+func EncodeTable(m *MemTable) []byte {
 	buf := bytes.NewBuffer(make([]byte, 0, DataBlockSize))
+	it := m.it
 
+	// initial.
 	dataBlock := new(pb.DataBlock)
+	indexBlock := &pb.IndexBlock{
+		FirstKey: m.FirstKey(),
+		LastKey:  m.LastKey(),
+	}
 
-	// init indexBlock.
-	indexBlock := new(pb.IndexBlock)
-	it.SeekToLast()
-	indexBlock.LastKey = it.Key()
-	it.SeekToFirst()
-	indexBlock.FirstKey = it.Key()
+	// encode data block.
+	do := func() {
+		src, _ := proto.Marshal(dataBlock)
+		dst := Compress(src, nil)
 
-	// iter memtable.
-	for {
+		indexBlock.Entries = append(indexBlock.Entries, &pb.IndexBlockEntry{
+			LastKey: dataBlock.Keys[len(dataBlock.Keys)-1],
+			Offset:  uint32(buf.Len()),
+			Size:    uint32(len(dst)),
+		})
+		buf.Write(dst)
+
+		dataBlock.Reset()
+	}
+
+	m.Iter(func(key, value []byte, meta uint16) {
 		dataBlock.Keys = append(dataBlock.Keys, it.Key())
 		dataBlock.Values = append(dataBlock.Values, it.Value())
 		dataBlock.Types = append(dataBlock.Types, byte(it.Meta()))
 		dataBlock.Size += uint32(len(it.Key()) + len(it.Value()) + 1)
 
-		it.Next()
-
 		// encode data blocks.
-		if dataBlock.Size >= DataBlockSize || !it.Valid() {
-			src, _ := proto.Marshal(dataBlock)
-			// compress.
-			dst := Compress(src, nil)
-
-			indexBlock.Entries = append(indexBlock.Entries, &pb.IndexBlockEntry{
-				LastKey: dataBlock.Keys[len(dataBlock.Keys)-1],
-				Offset:  uint32(buf.Len()),
-				Size:    uint32(len(dst)),
-			})
-			buf.Write(dst)
-
-			dataBlock.Reset()
-
-			// break if end.
-			if !it.Valid() {
-				break
-			}
+		if dataBlock.Size >= DataBlockSize {
+			do()
 		}
-	}
+	})
+	do()
 
 	// encode index block.
 	data, _ := proto.Marshal(indexBlock)
@@ -188,10 +180,7 @@ func (s *SSTable) decodeData() error {
 	if err := s.decodeIndex(); err != nil {
 		return err
 	}
-
-	s.skl = arenaskl.NewSkiplist(arenaskl.NewArena(MemTableSize))
-	s.it = new(arenaskl.Iterator)
-	s.it.Init(s.skl)
+	s.m = NewMemTable()
 
 	for _, entry := range s.indexBlock.Entries {
 		// read
@@ -211,7 +200,7 @@ func (s *SSTable) decodeData() error {
 
 		// insert
 		for i, key := range s.dataBlock.Keys {
-			s.it.Add(key, s.dataBlock.Values[i], uint16(s.dataBlock.Types[i]))
+			s.m.PutRaw(key, s.dataBlock.Values[i], uint16(s.dataBlock.Types[i]))
 		}
 	}
 	return nil
@@ -233,7 +222,5 @@ func seekRead(fs *os.File, offset int64, size uint64, whence int) ([]byte, error
 
 // merge
 func (s *SSTable) merge(t *SSTable) {
-	for t.it.SeekToFirst(); t.it.Valid(); t.it.Next() {
-		s.it.Add(t.it.Key(), t.it.Value(), uint16(t.it.Meta()))
-	}
+	s.m.Merge(t.m)
 }

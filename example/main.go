@@ -2,6 +2,7 @@ package main
 
 import (
 	"strconv"
+	"time"
 
 	lsm "github.com/xgzlucario/LSM"
 )
@@ -28,5 +29,7 @@ func main() {
 	for i := 0; ; i++ {
 		k := []byte("key" + strconv.Itoa(i))
 		lsm.Put(k, k)
+
+		time.Sleep(time.Microsecond)
 	}
 }

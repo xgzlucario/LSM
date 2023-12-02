@@ -24,7 +24,7 @@ var (
 	Level0MaxTables = 8
 
 	MinorCompactInterval = time.Second
-	MajorCompactInterval = time.Second
+	MajorCompactInterval = 10 * time.Second
 )
 
 // LSM-Tree defination.
@@ -106,30 +106,36 @@ func (lsm *LSM) Close() error {
 	return nil
 }
 
+// DumpTable
+func (lsm *LSM) DumpTable(level int, m *MemTable) error {
+	tableName := fmt.Sprintf("L%d-%d.sst", level, time.Now().UnixNano())
+	// log
+	lsm.logger.Info(fmt.Sprintf("[MinorCompact] save %s", tableName))
+
+	return os.WriteFile(path.Join(lsm.path, tableName), EncodeTable(m), 0644)
+}
+
 // MinorCompact
-func (lsm *LSM) MinorCompact(mt *MemTable) {
-	name := fmt.Sprintf("L0-%d.sst", time.Now().UnixNano())
-
-	lsm.logger.Info(fmt.Sprintf("[MinorCompact] save %s", name))
-
-	if err := os.WriteFile(path.Join(lsm.path, name), DumpTable(mt.it), 0644); err != nil {
+func (lsm *LSM) MinorCompact(m *MemTable) {
+	if m.skl.Size() == 0 {
+		return
+	}
+	if err := lsm.DumpTable(0, m); err != nil {
 		panic(err)
 	}
 }
 
-// MajorCompact
-func (lsm *LSM) MajorCompact() error {
-	lsm.Lock()
-	defer lsm.Unlock()
-
+// loadLevelTables
+func (lsm *LSM) loadLevelTables(level int) ([]*SSTable, error) {
 	files, err := os.ReadDir(lsm.path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// filter.
+	prefix := fmt.Sprintf("L%d", level)
 	files = slices.DeleteFunc(files, func(a fs.DirEntry) bool {
-		return !strings.HasPrefix(a.Name(), "L0")
+		return !strings.HasPrefix(a.Name(), prefix)
 	})
 	slices.SortFunc(files, func(a, b fs.DirEntry) int {
 		return strings.Compare(a.Name(), b.Name())
@@ -140,14 +146,27 @@ func (lsm *LSM) MajorCompact() error {
 	for _, file := range files {
 		sst, err := NewSSTable(path.Join(lsm.path, file.Name()))
 		if err != nil {
-			return err
+			return nil, err
 		}
 		defer sst.Close()
 
 		if err := sst.decodeData(); err != nil {
-			return err
+			return nil, err
 		}
 		tables = append(tables, sst)
+	}
+
+	return tables, nil
+}
+
+// MajorCompact
+func (lsm *LSM) MajorCompact() error {
+	tables, err := lsm.loadLevelTables(0)
+	if err != nil {
+		return err
+	}
+	if len(tables) == 0 {
+		return nil
 	}
 
 	// merge tables.
@@ -156,18 +175,17 @@ func (lsm *LSM) MajorCompact() error {
 		t0.merge(table)
 	}
 
-	// dump.
-	name := fmt.Sprintf("L1-%d.sst", time.Now().UnixNano())
+	lsm.Lock()
+	defer lsm.Unlock()
 
-	lsm.logger.Info(fmt.Sprintf("[MajorCompact] merge %s", name))
-
-	if err := os.WriteFile(path.Join(lsm.path, name), DumpTable(t0.it), 0644); err != nil {
+	// dump table.
+	if err := lsm.DumpTable(1, t0.m); err != nil {
 		panic(err)
 	}
 
 	// remove old tables.
-	for _, file := range files {
-		if err := os.Remove(path.Join(lsm.path, file.Name())); err != nil {
+	for _, table := range tables {
+		if err := os.Remove(table.fd.Name()); err != nil {
 			return err
 		}
 	}
@@ -177,13 +195,13 @@ func (lsm *LSM) MajorCompact() error {
 
 // FindTable
 func FindTable(key []byte, path string) ([]byte, error) {
-	sst, err := NewSSTable(path)
+	table, err := NewSSTable(path)
 	if err != nil {
 		return nil, err
 	}
-	defer sst.Close()
+	defer table.Close()
 
-	return sst.findKey(key)
+	return table.findKey(key)
 }
 
 // IsOverlap

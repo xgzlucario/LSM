@@ -23,8 +23,21 @@ func TestSSTable(t *testing.T) {
 	}
 
 	// dump
-	src := DumpTable(memtable.it)
+	src := EncodeTable(memtable)
 	os.WriteFile("test.sst", src, 0644)
+
+	// decodeAll
+	sst, _ := NewSSTable("test.sst")
+	sst.decodeData()
+	for k, v := range vmap {
+		res, err := sst.m.Get([]byte(k))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(res) != v {
+			t.Fatalf("not equal: %s != %s", res, v)
+		}
+	}
 
 	// find
 	for k, v := range vmap {
@@ -33,7 +46,7 @@ func TestSSTable(t *testing.T) {
 			t.Fatal(err)
 		}
 		if string(res) != v {
-			t.Fatal("not equal")
+			t.Fatalf("not equal: %s != %s", res, v)
 		}
 	}
 
