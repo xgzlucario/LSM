@@ -153,7 +153,7 @@ func (s *SSTable) decodeIndex() error {
 	return proto.Unmarshal(buf, &s.indexBlock)
 }
 
-// findKey return value by find sstable on disk.
+// findKey return value by find sstable.
 func (s *SSTable) findKey(key []byte) ([]byte, error) {
 	for _, entry := range s.indexBlock.Entries {
 		if bytes.Compare(key, entry.LastKey) <= 0 {
@@ -168,12 +168,7 @@ func (s *SSTable) findKey(key []byte) ([]byte, error) {
 	}
 
 	// find in memtable.
-	s.m.it.Seek(key)
-	if s.m.it.Valid() && s.m.it.Meta() == typeVal {
-		return s.m.it.Value(), nil
-	}
-
-	return nil, nil
+	return s.m.Get(key)
 }
 
 // loadDataBlock

@@ -34,12 +34,11 @@ func NewMemTable(sizes ...uint32) *MemTable {
 // Get
 func (m *MemTable) Get(key []byte) ([]byte, error) {
 	m.it.Seek(key)
-
-	if !m.it.Valid() || m.it.Meta() == typeDel {
-		return nil, ErrKeyNotFound
+	if m.it.Valid() && m.it.Meta() == typeVal {
+		return m.it.Value(), nil
 	}
 
-	return m.it.Value(), nil
+	return nil, ErrKeyNotFound
 }
 
 // PutRaw

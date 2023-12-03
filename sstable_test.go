@@ -50,7 +50,7 @@ func TestSSTable(t *testing.T) {
 		ts := time.Now().UnixNano()
 		k := strconv.Itoa(int(ts))
 		res, err := sst.findKey([]byte(k))
-		assert.Nil(err)
+		assert.Equal(ErrKeyNotFound, err)
 		assert.Equal("", string(res))
 	}
 }
