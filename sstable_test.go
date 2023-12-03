@@ -40,7 +40,7 @@ func TestSSTable(t *testing.T) {
 
 	// find
 	for k, v := range vmap {
-		res, err := FindTable([]byte(k), "test.sst")
+		res, err := sst.findKey([]byte(k))
 		assert.Nil(err)
 		assert.Equal(v, string(res))
 	}
@@ -49,7 +49,7 @@ func TestSSTable(t *testing.T) {
 	for i := 0; i < 10000; i++ {
 		ts := time.Now().UnixNano()
 		k := strconv.Itoa(int(ts))
-		res, err := FindTable([]byte(k), "test.sst")
+		res, err := sst.findKey([]byte(k))
 		assert.Nil(err)
 		assert.Equal("", string(res))
 	}

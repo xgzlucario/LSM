@@ -13,6 +13,7 @@ message IndexBlockEntry {
     bytes lastKey = 1;
     uint32 offset = 2;
     uint32 size = 3;
+    bool cached = 4;
 }
 
 message IndexBlock {

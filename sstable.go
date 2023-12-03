@@ -6,7 +6,6 @@ import (
 	"hash/crc32"
 	"io"
 	"os"
-	"slices"
 
 	"github.com/xgzlucario/LSM/pb"
 	"google.golang.org/protobuf/proto"
@@ -28,9 +27,6 @@ type SSTable struct {
 	fd         *os.File
 	m          *MemTable
 	indexBlock pb.IndexBlock
-
-	dataDecoded bool
-	dataBlock   pb.DataBlock
 }
 
 // Footer
@@ -114,7 +110,10 @@ func NewSSTable(path string) (*SSTable, error) {
 		return nil, err
 	}
 
-	table := &SSTable{fd: fd}
+	table := &SSTable{
+		fd: fd,
+		m:  NewMemTable(MemTableSize),
+	}
 	if err := table.decodeIndex(); err != nil {
 		return nil, err
 	}
@@ -158,61 +157,58 @@ func (s *SSTable) decodeIndex() error {
 func (s *SSTable) findKey(key []byte) ([]byte, error) {
 	for _, entry := range s.indexBlock.Entries {
 		if bytes.Compare(key, entry.LastKey) <= 0 {
-			// read
-			src, err := seekRead(s.fd, int64(entry.Offset), uint64(entry.Size), io.SeekStart)
-			if err != nil {
-				return nil, err
+			if !entry.Cached {
+				if err := s.loadDataBlock(entry); err != nil {
+					return nil, err
+				}
+				entry.Cached = true
+				break
 			}
-			// decompress
-			dst, err := Decompress(src, nil)
-			if err != nil {
-				return nil, err
-			}
-			if err = proto.Unmarshal(dst, &s.dataBlock); err != nil {
-				return nil, err
-			}
-			break
 		}
 	}
 
-	// binary search.
-	i, ok := slices.BinarySearchFunc(s.dataBlock.Keys, key, func(a, b []byte) int {
-		return bytes.Compare(a, b)
-	})
-	if ok {
-		return s.dataBlock.Values[i], nil
+	// find in memtable.
+	s.m.it.Seek(key)
+	if s.m.it.Valid() && s.m.it.Meta() == typeVal {
+		return s.m.it.Value(), nil
 	}
 
 	return nil, nil
 }
 
+// loadDataBlock
+func (s *SSTable) loadDataBlock(entry *pb.IndexBlockEntry) error {
+	dataBlock := new(pb.DataBlock)
+
+	// read and decode.
+	src, err := seekRead(s.fd, int64(entry.Offset), uint64(entry.Size), io.SeekStart)
+	if err != nil {
+		return err
+	}
+	dst, err := Decompress(src, nil)
+	if err != nil {
+		return err
+	}
+	if err = proto.Unmarshal(dst, dataBlock); err != nil {
+		return err
+	}
+
+	// put to memtable.
+	for i, k := range dataBlock.Keys {
+		s.m.PutRaw(k, dataBlock.Values[i], uint16(dataBlock.Types[i]))
+	}
+
+	return nil
+}
+
 // decodeData decode all data blocks.
 func (s *SSTable) decodeData() error {
-	if s.dataDecoded {
-		return nil
-	}
-	s.dataDecoded = true
-	s.m = NewMemTable(MemTableSize)
-
 	for _, entry := range s.indexBlock.Entries {
-		// read
-		src, err := seekRead(s.fd, int64(entry.Offset), uint64(entry.Size), io.SeekStart)
-		if err != nil {
-			return err
-		}
-		// decompress
-		dst, err := Decompress(src, nil)
-		if err != nil {
-			return err
-		}
-
-		if err = proto.Unmarshal(dst, &s.dataBlock); err != nil {
-			return err
-		}
-
-		// insert
-		for i, key := range s.dataBlock.Keys {
-			s.m.PutRaw(key, s.dataBlock.Values[i], uint16(s.dataBlock.Types[i]))
+		if !entry.Cached {
+			if err := s.loadDataBlock(entry); err != nil {
+				return err
+			}
+			entry.Cached = true
 		}
 	}
 	return nil

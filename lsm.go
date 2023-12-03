@@ -286,14 +286,3 @@ func (lsm *LSM) CompactLevelN(level int) (mergedNum int, err error) {
 
 	return
 }
-
-// FindTable
-func FindTable(key []byte, path string) ([]byte, error) {
-	table, err := NewSSTable(path)
-	if err != nil {
-		return nil, err
-	}
-	defer table.Close()
-
-	return table.findKey(key)
-}
