@@ -6,7 +6,6 @@ message DataBlock {
   repeated bytes keys = 1;
   repeated bytes values = 2;
   bytes types = 3;
-  uint32 size = 4;
 }
 
 message IndexBlockEntry {

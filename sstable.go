@@ -24,9 +24,18 @@ var (
 
 // SSTable
 type SSTable struct {
-	fd         *os.File
-	m          *MemTable
+	fd *os.File
+
+	// MemTable is the container for data in memory.
+	// When lookup a table, the data from the corresponding dataBlock on disk is first
+	// loaded into the memTable, and then find it.
+	m *MemTable
+
+	// indexBlock is the index of dataBlocks, loaded when the table is opened.
 	indexBlock pb.IndexBlock
+
+	// dataBlock is the container for data on disk.
+	dataBlock pb.DataBlock
 }
 
 // Footer
@@ -50,7 +59,8 @@ type Footer struct {
 // +-----------------+
 // EncodeTable encode a memtable to bytes.
 func EncodeTable(m *MemTable) []byte {
-	buf := bytes.NewBuffer(make([]byte, 0, DataBlockSize))
+	buf := bytes.NewBuffer(make([]byte, 0, MemTableSize/10))
+	var size uint32
 
 	// initial.
 	dataBlock := new(pb.DataBlock)
@@ -64,15 +74,14 @@ func EncodeTable(m *MemTable) []byte {
 		dataBlock.Keys = append(dataBlock.Keys, m.it.Key())
 		dataBlock.Values = append(dataBlock.Values, m.it.Value())
 		dataBlock.Types = append(dataBlock.Types, byte(m.it.Meta()))
-		dataBlock.Size += uint32(len(m.it.Key()) + len(m.it.Value()) + 1)
+		size += uint32(len(m.it.Key()) + len(m.it.Value()) + 1)
 
 		m.it.Next()
 
-		// encode data blocks.
-		if dataBlock.Size >= DataBlockSize || !m.it.Valid() {
+		// when reach the threshold, generate a new data block.
+		if size >= DataBlockSize || !m.it.Valid() {
 			src, _ := proto.Marshal(dataBlock)
-			// compress.
-			dst := Compress(src, nil)
+			dst := compress(src, nil)
 
 			indexBlock.Entries = append(indexBlock.Entries, &pb.IndexBlockEntry{
 				LastKey: dataBlock.Keys[len(dataBlock.Keys)-1],
@@ -82,6 +91,7 @@ func EncodeTable(m *MemTable) []byte {
 			buf.Write(dst)
 
 			dataBlock.Reset()
+			size = 0
 
 			// break if end.
 			if !m.it.Valid() {
@@ -114,7 +124,7 @@ func NewSSTable(path string) (*SSTable, error) {
 		fd: fd,
 		m:  NewMemTable(MemTableSize),
 	}
-	if err := table.decodeIndex(); err != nil {
+	if err := table.loadIndex(); err != nil {
 		return nil, err
 	}
 
@@ -126,8 +136,8 @@ func (s *SSTable) Close() error {
 	return s.fd.Close()
 }
 
-// decodeIndex decode index block.
-func (s *SSTable) decodeIndex() error {
+// loadIndex load index block.
+func (s *SSTable) loadIndex() error {
 	buf, err := seekRead(s.fd, -footerSize, footerSize, io.SeekEnd)
 	if err != nil {
 		return err
@@ -144,8 +154,6 @@ func (s *SSTable) decodeIndex() error {
 	if err != nil {
 		return err
 	}
-
-	// check crc.
 	if crc32.ChecksumIEEE(buf) != footer.CRC {
 		return ErrCRCChecksum
 	}
@@ -154,56 +162,58 @@ func (s *SSTable) decodeIndex() error {
 }
 
 // findKey return value by find sstable.
-func (s *SSTable) findKey(key []byte) ([]byte, error) {
+// cached indicates whether the data hit the cache.
+func (s *SSTable) findKey(key []byte) (res []byte, cached bool, err error) {
 	for _, entry := range s.indexBlock.Entries {
 		if bytes.Compare(key, entry.LastKey) <= 0 {
-			if !entry.Cached {
-				if err := s.loadDataBlock(entry); err != nil {
-					return nil, err
-				}
-				entry.Cached = true
-				break
+			// load cache.
+			if ok, err := s.loadDataBlock(entry); err != nil {
+				return nil, false, err
+
+			} else {
+				cached = !ok
 			}
+			break
 		}
 	}
 
 	// find in memtable.
-	return s.m.Get(key)
+	res, err = s.m.Get(key)
+	return
 }
 
-// loadDataBlock
-func (s *SSTable) loadDataBlock(entry *pb.IndexBlockEntry) error {
-	dataBlock := new(pb.DataBlock)
-
+// loadDataBlock load data block to cache.
+func (s *SSTable) loadDataBlock(entry *pb.IndexBlockEntry) (bool, error) {
+	if entry.Cached {
+		return false, nil
+	}
 	// read and decode.
 	src, err := seekRead(s.fd, int64(entry.Offset), uint64(entry.Size), io.SeekStart)
 	if err != nil {
-		return err
+		return false, err
 	}
-	dst, err := Decompress(src, nil)
+	dst, err := decompress(src, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if err = proto.Unmarshal(dst, dataBlock); err != nil {
-		return err
+	if err = proto.Unmarshal(dst, &s.dataBlock); err != nil {
+		return false, err
 	}
 
 	// put to memtable.
-	for i, k := range dataBlock.Keys {
-		s.m.PutRaw(k, dataBlock.Values[i], uint16(dataBlock.Types[i]))
+	for i, k := range s.dataBlock.Keys {
+		s.m.PutRaw(k, s.dataBlock.Values[i], uint16(s.dataBlock.Types[i]))
 	}
+	entry.Cached = true
 
-	return nil
+	return true, nil
 }
 
-// decodeData decode all data blocks.
-func (s *SSTable) decodeData() error {
+// loadAllDataBlock load all data blocks to cache.
+func (s *SSTable) loadAllDataBlock() error {
 	for _, entry := range s.indexBlock.Entries {
-		if !entry.Cached {
-			if err := s.loadDataBlock(entry); err != nil {
-				return err
-			}
-			entry.Cached = true
+		if _, err := s.loadDataBlock(entry); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -225,10 +235,10 @@ func seekRead(fs *os.File, offset int64, size uint64, whence int) ([]byte, error
 
 // merge
 func (s *SSTable) Merge(t *SSTable) {
-	if err := s.decodeData(); err != nil {
+	if err := s.loadAllDataBlock(); err != nil {
 		panic(err)
 	}
-	if err := t.decodeData(); err != nil {
+	if err := t.loadAllDataBlock(); err != nil {
 		panic(err)
 	}
 	s.m.Merge(t.m)

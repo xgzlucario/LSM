@@ -11,12 +11,10 @@ var (
 	decoder, _ = zstd.NewReader(nil)
 )
 
-// Compress with zstd algorithm.
-func Compress(src, dst []byte) []byte {
+func compress(src, dst []byte) []byte {
 	return encoder.EncodeAll(src, dst)
 }
 
-// Decompress with zstd algorithm.
-func Decompress(src, dst []byte) ([]byte, error) {
+func decompress(src, dst []byte) ([]byte, error) {
 	return decoder.DecodeAll(src, dst)
 }
