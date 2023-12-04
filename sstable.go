@@ -234,14 +234,21 @@ func seekRead(fs *os.File, offset int64, size uint64, whence int) ([]byte, error
 }
 
 // merge
-func (s *SSTable) Merge(t *SSTable) {
+func (s *SSTable) Merge(tables ...*SSTable) {
 	if err := s.loadAllDataBlock(); err != nil {
 		panic(err)
 	}
-	if err := t.loadAllDataBlock(); err != nil {
-		panic(err)
+	for _, t := range tables {
+		if err := t.loadAllDataBlock(); err != nil {
+			panic(err)
+		}
 	}
-	s.m.Merge(t.m)
+
+	memtables := make([]*MemTable, 0, len(tables))
+	for _, t := range tables {
+		memtables = append(memtables, t.m)
+	}
+	s.m.Merge(memtables...)
 }
 
 // IsOverlap

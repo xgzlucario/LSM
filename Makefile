@@ -8,3 +8,7 @@ test-cover:
 clear:
 	rm -f *.sst
 	rm -f coverage.*
+
+run:
+	rm -rf lsm
+	go run example/main.go

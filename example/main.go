@@ -1,7 +1,7 @@
 package main
 
 import (
-	"strconv"
+	"fmt"
 	"time"
 
 	lsm "github.com/xgzlucario/LSM"
@@ -27,8 +27,11 @@ func main() {
 	}
 
 	for i := 0; ; i++ {
-		k := []byte(strconv.Itoa(int(time.Now().UnixMicro())))
-		lsm.Put(k, k)
+		k := []byte(fmt.Sprintf("%08d", i))
+
+		if err := lsm.Put(k, k); err != nil {
+			panic(err)
+		}
 
 		time.Sleep(time.Microsecond)
 	}

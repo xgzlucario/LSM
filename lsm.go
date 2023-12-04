@@ -19,7 +19,7 @@ var (
 	MemTableSize  uint32 = 4 * MB
 	DataBlockSize uint32 = 4 * KB
 
-	Level0MaxTables = 4
+	Level0MaxTables = 8
 
 	MinorCompactInterval = time.Second
 	MajorCompactInterval = 5 * time.Second
@@ -33,15 +33,15 @@ type LSM struct {
 	// RefCounter have two parts:
 	// 1. Storage System (indicating what is valid data)
 	// 2. Query (referenced when querying or compaction)
-	// sstable is removed from the file system when the reference is 0.
+	// sstable is removed from the file system when the ref count is 0.
 	ref *RefCounter
 
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu  sync.Mutex
-	mt  *MemTable
-	imt []*MemTable
+	mu sync.RWMutex
+	m  *MemTable
+	im []*MemTable
 
 	logger *slog.Logger
 }
@@ -56,7 +56,7 @@ func NewLSM(dir string) (*LSM, error) {
 		ref:    NewRefCounter(),
 		ctx:    ctx,
 		cancel: cancel,
-		mt:     NewMemTable(),
+		m:      NewMemTable(),
 		logger: slog.Default(),
 	}
 
@@ -94,14 +94,14 @@ func NewLSM(dir string) (*LSM, error) {
 // Put
 func (lsm *LSM) Put(key, value []byte) error {
 	// if memtable is full, rotate to immutable.
-	if lsm.mt.Full() {
+	if lsm.m.Full() {
 		m := NewMemTable()
 		lsm.mu.Lock()
-		lsm.imt = append(lsm.imt, lsm.mt)
-		lsm.mt = m
+		lsm.im = append(lsm.im, lsm.m)
+		lsm.m = m
 		lsm.mu.Unlock()
 	}
-	return lsm.mt.Put(key, value)
+	return lsm.m.Put(key, value)
 }
 
 // Get
@@ -142,12 +142,12 @@ func (lsm *LSM) MinorCompact() {
 	lsm.mu.Lock()
 	defer lsm.mu.Unlock()
 
-	for _, m := range lsm.imt {
+	for _, m := range lsm.im {
 		if err := lsm.dumpTable(0, m); err != nil {
 			panic(err)
 		}
 	}
-	lsm.imt = lsm.imt[:0]
+	lsm.im = lsm.im[:0]
 }
 
 // loadTables
@@ -218,12 +218,11 @@ func (lsm *LSM) compactLevel0() error {
 		return nil
 	}
 
-	// for level0, merge all tables to level1.
-	t0 := tables[0]
-	for _, table := range tables[1:] {
-		t0.Merge(table)
-	}
-	if err := lsm.dumpTable(1, t0.m); err != nil {
+	// merge all level 0 tables to level 1.
+	t := tables[0]
+	t.Merge(tables[1:]...)
+
+	if err := lsm.dumpTable(1, t.m); err != nil {
 		panic(err)
 	}
 
@@ -280,7 +279,6 @@ func (lsm *LSM) compactLevelN(level int) (mergedNum int, err error) {
 			lsm.ref.Incr(-1, mergedNames...)
 		}
 	}
-
 	return
 }
 

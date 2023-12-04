@@ -1,6 +1,8 @@
 package lsm
 
 import (
+	"math"
+
 	"github.com/andy-kimball/arenaskl"
 )
 
@@ -8,6 +10,8 @@ const (
 	KB = 1 << 10
 	MB = 1 << 20
 	GB = 1 << 30
+
+	maxNodeSize = math.MaxUint16
 )
 
 // Memable
@@ -45,22 +49,26 @@ func (m *MemTable) Get(key []byte) ([]byte, error) {
 
 // PutRaw
 func (m *MemTable) PutRaw(key, value []byte, vtype uint16) error {
+	if len(key) > maxNodeSize || len(value) > maxNodeSize {
+		return ErrInputToLarge
+	}
 	return m.it.Add(key, value, vtype)
 }
 
 // Put insert key-value pair to the memable.
 func (m *MemTable) Put(key, value []byte) error {
-	return m.it.Add(key, value, typeVal)
+	return m.PutRaw(key, value, typeVal)
 }
 
 // Delete insert a tombstone to the memable.
 func (m *MemTable) Delete(key []byte) error {
-	return m.it.Add(key, nil, typeDel)
+	return m.PutRaw(key, nil, typeDel)
 }
 
 // Full
 func (m *MemTable) Full() bool {
-	return m.skl.Arena().Size() >= uint32(0.9*float64(m.skl.Arena().Cap()))
+	remain := m.skl.Arena().Cap() - m.skl.Arena().Size()
+	return remain < maxNodeSize*2
 }
 
 // FirstKey
@@ -82,25 +90,36 @@ func (m *MemTable) Iter(f func([]byte, []byte, uint16)) {
 	}
 }
 
-// Merge merge m2 to m, m2 is the newest table.
-func (m *MemTable) Merge(m2 *MemTable) {
-	m3 := NewMemTable(m.skl.Arena().Cap() + m2.skl.Arena().Cap())
+// Exist
+func (m *MemTable) Exist(key []byte) bool {
+	m.it.Seek(key)
+	return m.it.Valid()
+}
+
+// Merge merge tables to m.
+func (m *MemTable) Merge(tables ...*MemTable) {
+	size := m.skl.Arena().Cap()
+	for _, t := range tables {
+		size += t.skl.Arena().Cap()
+	}
+
+	newm := NewMemTable(size)
 
 	m.Iter(func(key, value []byte, vtype uint16) {
-		if err := m3.PutRaw(key, value, vtype); err != nil {
+		if err := newm.PutRaw(key, value, vtype); err != nil {
 			panic(err)
 		}
 	})
 
-	m2.Iter(func(key, value []byte, vtype uint16) {
-		m3.it.Seek(key)
-		if m3.it.Valid() {
-			return
-		}
-		if err := m3.PutRaw(key, value, vtype); err != nil {
-			panic(err)
-		}
-	})
+	for _, t := range tables {
+		t.Iter(func(key, value []byte, vtype uint16) {
+			if !newm.Exist(key) {
+				if err := newm.PutRaw(key, value, vtype); err != nil {
+					panic(err)
+				}
+			}
+		})
+	}
 
-	*m = *m3
+	*m = *newm
 }
