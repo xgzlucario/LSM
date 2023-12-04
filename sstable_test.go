@@ -67,14 +67,14 @@ func TestSSTable(t *testing.T) {
 func TestCompact(t *testing.T) {
 	assert := assert.New(t)
 
-	m1 := NewMemTable(math.MaxUint32)
+	m1 := NewMemTable()
 	for i := 1000; i < 2000; i++ {
 		k := []byte(strconv.Itoa(i))
 		m1.Put(k, k)
 	}
 	assert.Nil(os.WriteFile("m1.sst", EncodeTable(m1), 0644))
 
-	m2 := NewMemTable(math.MaxUint32)
+	m2 := NewMemTable()
 	for i := 3000; i < 4000; i++ {
 		k := []byte(strconv.Itoa(i))
 		m2.Put(k, k)

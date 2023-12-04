@@ -1,57 +1,54 @@
 package lsm
 
-import "sync"
+import (
+	"sync"
+)
 
 // RefCounter
 type RefCounter struct {
 	mu sync.RWMutex
-	m  map[string]uint32
+	m  map[string]int
 }
 
 // NewRefCounter
 func NewRefCounter() *RefCounter {
-	return &RefCounter{m: make(map[string]uint32)}
+	return &RefCounter{m: make(map[string]int)}
 }
 
-// AddRef
-func (l *RefCounter) AddRef(key string) {
+// Incr
+func (l *RefCounter) Incr(delta int, keys ...string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	n, ok := l.m[key]
-	if !ok {
-		l.m[key] = 1
-
-	} else {
-		l.m[key] = n + 1
-	}
-}
-
-// DelRef
-func (l *RefCounter) DelRef(key string, onZeroRef func()) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	n, ok := l.m[key]
-	if !ok {
-		return
-	}
-
-	if n == 1 {
-		delete(l.m, key)
-		onZeroRef()
-
-	} else {
-		l.m[key] = n - 1
+	for _, key := range keys {
+		n, ok := l.m[key]
+		if ok {
+			l.m[key] = n + delta
+		} else {
+			l.m[key] = delta
+		}
 	}
 }
 
 // GetRef
-func (l *RefCounter) GetRef(key string) (uint32, bool) {
+func (l *RefCounter) Get(key string) (int, bool) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
 	ref, ok := l.m[key]
 
 	return ref, ok
+}
+
+// DelZero
+func (l *RefCounter) DelZero(cb func(string)) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	for k, v := range l.m {
+		if v == 0 {
+			cb(k)
+			delete(l.m, k)
+		}
+	}
 }

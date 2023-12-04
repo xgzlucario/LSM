@@ -8,13 +8,10 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"slices"
-	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
-
-	"log"
 )
 
 // configuration for LSM-Tree.
@@ -22,7 +19,7 @@ var (
 	MemTableSize  uint32 = 4 * MB
 	DataBlockSize uint32 = 4 * KB
 
-	Level0MaxTables = 8
+	Level0MaxTables = 4
 
 	MinorCompactInterval = time.Second
 	MajorCompactInterval = 5 * time.Second
@@ -30,14 +27,19 @@ var (
 
 // LSM-Tree defination.
 type LSM struct {
-	path string
+	index uint64
+	path  string
 
+	// RefCounter have two parts:
+	// 1. Storage System (indicating what is valid data)
+	// 2. Query (referenced when querying or compaction)
+	// sstable is removed from the file system when the reference is 0.
 	ref *RefCounter
-	mu  sync.Mutex
 
 	ctx    context.Context
 	cancel context.CancelFunc
 
+	mu  sync.Mutex
 	mt  *MemTable
 	imt []*MemTable
 
@@ -76,9 +78,7 @@ func NewLSM(dir string) (*LSM, error) {
 		for {
 			select {
 			case <-time.After(MajorCompactInterval):
-				if err := lsm.MajorCompact(); err != nil {
-					log.Fatal(err)
-				}
+				lsm.MajorCompact()
 
 			case <-lsm.ctx.Done():
 				return
@@ -93,10 +93,6 @@ func NewLSM(dir string) (*LSM, error) {
 
 // Put
 func (lsm *LSM) Put(key, value []byte) error {
-	if err := lsm.mt.Put(key, value); err != nil {
-		return err
-	}
-
 	// if memtable is full, rotate to immutable.
 	if lsm.mt.Full() {
 		m := NewMemTable()
@@ -105,8 +101,7 @@ func (lsm *LSM) Put(key, value []byte) error {
 		lsm.mt = m
 		lsm.mu.Unlock()
 	}
-
-	return nil
+	return lsm.mt.Put(key, value)
 }
 
 // Get
@@ -127,11 +122,19 @@ func (lsm *LSM) Close() error {
 
 // dumpTable
 func (lsm *LSM) dumpTable(level int, m *MemTable) error {
-	tableName := fmt.Sprintf("L%d-%s.sst", level, strconv.FormatInt(time.Now().UnixNano(), 36))
-	// log
-	lsm.logger.Info(fmt.Sprintf("[MinorCompact] save %s", tableName))
+	name := fmt.Sprintf("L%d-%06d_%s_%s.sst",
+		level,
+		atomic.AddUint64(&lsm.index, 1),
+		m.FirstKey(),
+		m.LastKey(),
+	)
 
-	return os.WriteFile(path.Join(lsm.path, tableName), EncodeTable(m), 0644)
+	// add storage ref count.
+	lsm.ref.Incr(1, name)
+
+	lsm.log("[MinorCompact] save %s", name)
+
+	return os.WriteFile(path.Join(lsm.path, name), EncodeTable(m), 0644)
 }
 
 // MinorCompact
@@ -148,108 +151,111 @@ func (lsm *LSM) MinorCompact() {
 }
 
 // loadTables
-func (lsm *LSM) loadTables(level int) ([]*SSTable, error) {
-	files, err := os.ReadDir(lsm.path)
-	if err != nil {
-		return nil, err
-	}
+func (lsm *LSM) loadTables(level int) ([]*SSTable, []string, error) {
+	tables := make([]*SSTable, 0, 8)
+	names := make([]string, 0, 8)
 
-	// filter.
 	prefix := fmt.Sprintf("L%d", level)
 
-	files = slices.DeleteFunc(files, func(fs fs.DirEntry) bool {
-		return !strings.HasPrefix(fs.Name(), prefix)
-	})
-	slices.SortFunc(files, func(f1, f2 fs.DirEntry) int {
-		return strings.Compare(f1.Name(), f2.Name())
-	})
-
-	// load tables.
-	tables := make([]*SSTable, 0, len(files))
-	for _, file := range files {
-		// add ref.
-		lsm.ref.AddRef(file.Name())
-
-		sst, err := NewSSTable(path.Join(lsm.path, file.Name()))
+	filepath.WalkDir(lsm.path, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
-			return nil, err
+			panic(err)
+		}
+
+		name := entry.Name()
+		if !strings.HasPrefix(name, prefix) {
+			return nil
+		}
+
+		// add query ref count.
+		lsm.ref.Incr(1, name)
+
+		sst, err := NewSSTable(path)
+		if err != nil {
+			panic(err)
 		}
 		tables = append(tables, sst)
-	}
+		names = append(names, name)
 
-	return tables, nil
+		return nil
+	})
+
+	return tables, names, nil
 }
 
 // MajorCompact
-func (lsm *LSM) MajorCompact() error {
-	if err := lsm.CompactLevel0(); err != nil {
-		return err
+func (lsm *LSM) MajorCompact() {
+	if err := lsm.compactLevel0(); err != nil {
+		panic(err)
 	}
+
 	for level := 1; ; level++ {
-		if n, err := lsm.CompactLevelN(level); n == 0 || err != nil {
-			return err
+		lsm.ref.DelZero(func(s string) {
+			if err := os.Remove(path.Join(lsm.path, s)); err != nil {
+				panic(err)
+			}
+		})
+
+		if n, err := lsm.compactLevelN(level); err != nil {
+			panic(err)
+
+		} else if n == 0 {
+			return
 		}
 	}
 }
 
-// CompactLevel0
-func (lsm *LSM) CompactLevel0() error {
-	// tables for current level.
-	tables, err := lsm.loadTables(0)
+// compactLevel0
+func (lsm *LSM) compactLevel0() error {
+	tables, names, err := lsm.loadTables(0)
 	if err != nil {
 		return err
 	}
-	if len(tables) == 0 {
+	// delete query ref count.
+	defer lsm.ref.Incr(-1, names...)
+
+	if len(tables) < Level0MaxTables {
 		return nil
 	}
 
-	// for level0, merge all tables.
+	// for level0, merge all tables to level1.
 	t0 := tables[0]
 	for _, table := range tables[1:] {
 		t0.Merge(table)
 	}
-
-	// dump table.
 	if err := lsm.dumpTable(1, t0.m); err != nil {
 		panic(err)
 	}
 
-	// remove old tables.
-	for _, table := range tables {
-		name := filepath.Base(table.fd.Name())
-		lsm.ref.DelRef(name, func() {
-			if err := os.Remove(table.fd.Name()); err != nil {
-				panic(err)
-			}
-		})
-	}
+	// delete storage ref count.
+	lsm.ref.Incr(-1, names...)
 
 	return nil
 }
 
-// CompactLevelN
-func (lsm *LSM) CompactLevelN(level int) (mergedNum int, err error) {
-	// tables for current level.
-	tables, err := lsm.loadTables(level)
+// compactLevelN
+func (lsm *LSM) compactLevelN(level int) (mergedNum int, err error) {
+	tables, names, err := lsm.loadTables(level)
 	if err != nil {
 		return 0, err
 	}
+	// delete query ref count.
+	defer lsm.ref.Incr(-1, names...)
+
 	if len(tables) <= 1 {
 		return 0, nil
 	}
 
-	for i := range tables {
-		t1 := tables[i]
+	for i, t1 := range tables {
 		if t1 == nil {
-			return
+			continue
 		}
-
-		merged := false
+		mergedNames := make([]string, 0)
 
 		for j := i + 1; j < len(tables); j++ {
 			t2 := tables[j]
 			if t2 == nil {
-				return
+				continue
 			}
 
 			if t1.IsOverlap(t2) {
@@ -257,32 +263,27 @@ func (lsm *LSM) CompactLevelN(level int) (mergedNum int, err error) {
 
 				// if table is merged, remove it.
 				tables[j] = nil
-				name := filepath.Base(t2.fd.Name())
-				lsm.ref.DelRef(name, func() {
-					if err := os.Remove(t2.fd.Name()); err != nil {
-						panic(err)
-					}
-				})
-				merged = true
 				mergedNum++
+				mergedNames = append(mergedNames, filepath.Base(t2.fd.Name()))
 			}
 		}
 
-		if merged {
+		if len(mergedNames) > 0 {
+			mergedNames = append(mergedNames, filepath.Base(t1.fd.Name()))
+
 			// dump table.
 			if err := lsm.dumpTable(level+1, t1.m); err != nil {
 				panic(err)
 			}
 
 			// remmove old table.
-			name := filepath.Base(t1.fd.Name())
-			lsm.ref.DelRef(name, func() {
-				if err := os.Remove(t1.fd.Name()); err != nil {
-					panic(err)
-				}
-			})
+			lsm.ref.Incr(-1, mergedNames...)
 		}
 	}
 
 	return
+}
+
+func (lsm *LSM) log(msg string, args ...any) {
+	lsm.logger.Info(fmt.Sprintf(msg, args...))
 }

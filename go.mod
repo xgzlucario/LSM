@@ -4,7 +4,6 @@ go 1.21
 
 require (
 	github.com/andy-kimball/arenaskl v0.0.0-20200617143215-f701008588b9
-	github.com/brianvoe/gofakeit/v6 v6.25.0
 	github.com/klauspost/compress v1.17.4
 	github.com/stretchr/testify v1.4.0
 	google.golang.org/protobuf v1.31.0

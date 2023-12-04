@@ -11,29 +11,40 @@ func TestRefCounter(t *testing.T) {
 	l := NewRefCounter()
 
 	for i := 0; i < 100; i++ {
-		l.AddRef("a")
-		n, ok := l.GetRef("a")
+		l.Incr(1, "a")
+		n, ok := l.Get("a")
 		assert.True(ok)
-		assert.Equal(uint32(i+1), n)
+		assert.Equal(i+1, n)
 	}
 
 	for i := 0; i < 100; i++ {
-		var done bool
 		if i < 99 {
-			l.DelRef("a", func() { done = true })
-			n, ok := l.GetRef("a")
+			l.Incr(-1, "a")
+			n, ok := l.Get("a")
 
 			assert.True(ok)
-			assert.Equal(uint32(99-i), n)
-			assert.False(done)
+			assert.Equal(99-i, n)
 
 		} else {
-			l.DelRef("a", func() { done = true })
-			n, ok := l.GetRef("a")
+			l.Incr(-1, "a")
+			n, ok := l.Get("a")
 
-			assert.False(ok)
-			assert.Equal(uint32(0), n)
-			assert.True(done)
+			assert.True(ok)
+			assert.Equal(0, n)
 		}
 	}
+
+	l = NewRefCounter()
+	l.Incr(1, "a")
+	l.Incr(-1, "a")
+	l.Incr(1, "b")
+	l.Incr(1, "c")
+	l.Incr(-1, "c")
+
+	l.DelZero(func(s string) {
+		if s == "a" || s == "c" {
+		} else {
+			assert.Fail("should not happen")
+		}
+	})
 }
