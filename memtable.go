@@ -39,15 +39,13 @@ func NewMemTable(sizes ...uint32) *MemTable {
 
 // Get
 func (m *MemTable) Get(key []byte) ([]byte, error) {
-	m.it.Seek(key)
-	if m.it.Valid() && m.it.Meta() == typeVal {
+	if m.Exist(key) {
 		return m.it.Value(), nil
 	}
-
 	return nil, ErrKeyNotFound
 }
 
-// PutRaw
+// putRaw
 func (m *MemTable) PutRaw(key, value []byte, vtype uint16) error {
 	if len(key) > maxNodeSize || len(value) > maxNodeSize {
 		return ErrInputToLarge
@@ -58,6 +56,14 @@ func (m *MemTable) PutRaw(key, value []byte, vtype uint16) error {
 // Put insert key-value pair to the memable.
 func (m *MemTable) Put(key, value []byte) error {
 	return m.PutRaw(key, value, typeVal)
+}
+
+// Update
+func (m *MemTable) Update(key, value []byte, vtype uint16) error {
+	if m.Exist(key) {
+		return m.it.Set(value, typeVal)
+	}
+	return ErrKeyNotFound
 }
 
 // Delete insert a tombstone to the memable.
@@ -113,7 +119,11 @@ func (m *MemTable) Merge(tables ...*MemTable) {
 
 	for _, t := range tables {
 		t.Iter(func(key, value []byte, vtype uint16) {
-			if !newm.Exist(key) {
+			if newm.Exist(key) {
+				if err := newm.Update(key, value, vtype); err != nil {
+					panic(err)
+				}
+			} else {
 				if err := newm.PutRaw(key, value, vtype); err != nil {
 					panic(err)
 				}

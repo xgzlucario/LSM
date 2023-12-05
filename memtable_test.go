@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"strconv"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestMerge(t *testing.T) {
+	assert := assert.New(t)
 	m1 := NewMemTable()
+
 	for i := 1000; i < 5000; i++ {
 		k := []byte(strconv.Itoa(i))
 		m1.Put(k, k)
@@ -20,11 +24,29 @@ func TestMerge(t *testing.T) {
 	}
 
 	m1.Merge(m2)
-	// t.Error("m3 range:", string(m1.FirstKey()), string(m1.LastKey()))
+	assert.Equal("1000", string(m1.FirstKey()))
+	assert.Equal("5999", string(m1.LastKey()))
 
 	m1.Iter(func(key, value []byte, vtype uint16) {
-		if !bytes.Equal(key, value) {
-			t.Error("not equal")
+		assert.Equal(key, value)
+	})
+
+	// Update
+	m3 := NewMemTable()
+	for i := 5000; i < 7000; i++ {
+		k := []byte(strconv.Itoa(i))
+		v := []byte("value" + strconv.Itoa(i))
+		m3.Put(k, v)
+	}
+	m1.Merge(m3)
+	assert.Equal("1000", string(m1.FirstKey()))
+	assert.Equal("6999", string(m1.LastKey()))
+
+	m1.Iter(func(key, value []byte, vtype uint16) {
+		if bytes.Compare(key, []byte("5000")) >= 0 && bytes.Compare(key, []byte("7000")) < 0 {
+			assert.Equal("value"+string(key), string(value))
+		} else {
+			assert.Equal(string(key), string(value))
 		}
 	})
 }

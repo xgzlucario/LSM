@@ -3,9 +3,9 @@ package cache;
 option go_package = "github.com/xgzlucario/LSM/pb";
 
 message DataBlock {
-  repeated bytes keys = 1;
-  repeated bytes values = 2;
-  bytes types = 3;
+    repeated bytes keys = 1;
+    repeated bytes values = 2;
+    bytes types = 3;
 }
 
 message IndexBlockEntry {
@@ -18,5 +18,6 @@ message IndexBlockEntry {
 message IndexBlock {
     bytes firstKey = 1;
     bytes lastKey = 2;
-    repeated IndexBlockEntry entries = 3;
+    uint32 originSize = 3;
+    repeated IndexBlockEntry entries = 4;
 }

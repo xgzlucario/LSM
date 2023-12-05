@@ -27,12 +27,12 @@ func main() {
 	}
 
 	for i := 0; ; i++ {
-		k := []byte(fmt.Sprintf("%08d", i))
+		k := []byte(fmt.Sprintf("%06d", i))
 
 		if err := lsm.Put(k, k); err != nil {
 			panic(err)
 		}
 
-		time.Sleep(time.Microsecond)
+		time.Sleep(time.Microsecond / 10)
 	}
 }

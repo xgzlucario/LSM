@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,7 +20,7 @@ var (
 	MemTableSize  uint32 = 4 * MB
 	DataBlockSize uint32 = 4 * KB
 
-	Level0MaxTables = 8
+	Level0MaxTables = 4
 
 	MinorCompactInterval = time.Second
 	MajorCompactInterval = 5 * time.Second
@@ -140,14 +141,16 @@ func (lsm *LSM) dumpTable(level int, m *MemTable) error {
 // MinorCompact
 func (lsm *LSM) MinorCompact() {
 	lsm.mu.Lock()
-	defer lsm.mu.Unlock()
+	// need dump list.
+	list := slices.Clone(lsm.im)
+	lsm.im = lsm.im[:0]
+	lsm.mu.Unlock()
 
-	for _, m := range lsm.im {
+	for _, m := range list {
 		if err := lsm.dumpTable(0, m); err != nil {
 			panic(err)
 		}
 	}
-	lsm.im = lsm.im[:0]
 }
 
 // loadTables
@@ -258,12 +261,16 @@ func (lsm *LSM) compactLevelN(level int) (mergedNum int, err error) {
 			}
 
 			if t1.IsOverlap(t2) {
+				fmt.Println("Overlap:", i, j)
+				fmt.Println(string(t1.indexBlock.FirstKey), string(t1.indexBlock.LastKey))
+				fmt.Println(string(t2.indexBlock.FirstKey), string(t2.indexBlock.LastKey))
+
 				t1.Merge(t2)
 
 				// if table is merged, remove it.
-				tables[j] = nil
 				mergedNum++
 				mergedNames = append(mergedNames, filepath.Base(t2.fd.Name()))
+				tables[j] = nil
 			}
 		}
 

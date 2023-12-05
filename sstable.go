@@ -59,14 +59,15 @@ type Footer struct {
 // +-----------------+
 // EncodeTable encode a memtable to bytes.
 func EncodeTable(m *MemTable) []byte {
-	buf := bytes.NewBuffer(make([]byte, 0, MemTableSize/10))
+	buf := bytes.NewBuffer(make([]byte, 0, MemTableSize))
 	var size uint32
 
 	// initial.
 	dataBlock := new(pb.DataBlock)
 	indexBlock := &pb.IndexBlock{
-		FirstKey: m.FirstKey(),
-		LastKey:  m.LastKey(),
+		FirstKey:   m.FirstKey(),
+		LastKey:    m.LastKey(),
+		OriginSize: m.skl.Arena().Cap(),
 	}
 
 	// encode data block.
@@ -120,10 +121,7 @@ func NewSSTable(path string) (*SSTable, error) {
 		return nil, err
 	}
 
-	table := &SSTable{
-		fd: fd,
-		m:  NewMemTable(MemTableSize),
-	}
+	table := &SSTable{fd: fd}
 	if err := table.loadIndex(); err != nil {
 		return nil, err
 	}
@@ -159,6 +157,14 @@ func (s *SSTable) loadIndex() error {
 	}
 
 	return proto.Unmarshal(buf, &s.indexBlock)
+}
+
+// initMemTable
+func (s *SSTable) initMemTable() {
+	if s.m != nil {
+		return
+	}
+	s.m = NewMemTable(s.indexBlock.OriginSize)
 }
 
 // findKey return value by find sstable.
@@ -201,8 +207,11 @@ func (s *SSTable) loadDataBlock(entry *pb.IndexBlockEntry) (bool, error) {
 	}
 
 	// put to memtable.
+	s.initMemTable()
 	for i, k := range s.dataBlock.Keys {
-		s.m.PutRaw(k, s.dataBlock.Values[i], uint16(s.dataBlock.Types[i]))
+		if err := s.m.PutRaw(k, s.dataBlock.Values[i], uint16(s.dataBlock.Types[i])); err != nil {
+			panic(err)
+		}
 	}
 	entry.Cached = true
 
