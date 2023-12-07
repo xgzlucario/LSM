@@ -23,7 +23,20 @@ var (
 	order = binary.LittleEndian
 )
 
-// SSTable
+// +-----------------+
+// |  data block[0]  | <--+
+// +-----------------+    |
+// |     ... ...     |    |
+// +-----------------+    |2
+// |  data block[n]  |    |
+// +-----------------+    |
+// |                 | ---+
+// |   index block   |
+// |                 | <--+
+// +-----------------+    |1
+// |     footer      | ---+
+// +-----------------+
+// SSTable Defination.
 type SSTable struct {
 	fd *os.File
 
@@ -45,19 +58,6 @@ type Footer struct {
 	CRC            uint32
 }
 
-// +-----------------+
-// |  data block[0]  | <--+
-// +-----------------+    |
-// |     ... ...     |    |
-// +-----------------+    |2
-// |  data block[n]  |    |
-// +-----------------+    |
-// |                 | ---+
-// |   index block   |
-// |                 | <--+
-// +-----------------+    |1
-// |     footer      | ---+
-// +-----------------+
 // EncodeTable encode a memtable to bytes.
 func EncodeTable(m *memdb.DB) []byte {
 	buf := bytes.NewBuffer(make([]byte, 0, MemTableSize))
