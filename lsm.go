@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sourcegraph/conc/pool"
 	"github.com/xgzlucario/LSM/memdb"
 	"github.com/xgzlucario/LSM/refmap"
 )
@@ -25,8 +26,8 @@ const (
 
 // configuration for LSM-Tree.
 var (
-	MemTableSize  uint32 = 8 * MB
-	DataBlockSize uint32 = 8 * KB
+	MemTableSize  uint32 = 4 * MB
+	DataBlockSize uint32 = 4 * KB
 
 	MinorCompactInterval = time.Second
 	MajorCompactInterval = 5 * time.Second
@@ -108,7 +109,6 @@ func (lsm *LSM) Put(key, value []byte) error {
 	if full {
 		newdb := memdb.New()
 		lsm.mu.Lock()
-		lsm.db.Rotate()
 		lsm.dbList = append(lsm.dbList, lsm.db)
 		lsm.db = newdb
 		lsm.mu.Unlock()
@@ -153,18 +153,18 @@ func (lsm *LSM) dumpTable(level int, m *memdb.DB) error {
 
 // splitTable
 func (lsm *LSM) splitTable(m *memdb.DB) error {
+	pool := pool.New().WithErrors()
 	db := memdb.New()
+
 	m.Iter(func(key, value []byte, meta uint16) {
 		if full, err := db.PutIsFull(key, value, meta); full {
-			// dump
-			fmt.Println("split", string(db.FirstKey()), string(db.LastKey()))
+			// dump table.
+			pool.Go(func() error {
+				return lsm.dumpTable(1, db)
+			})
 
-			if err := lsm.dumpTable(1, db); err != nil {
-				panic(err)
-			}
-
-			// reset
-			db.Reset()
+			// create new memdb.
+			db = memdb.New()
 			if err := db.Put(key, value, meta); err != nil {
 				panic(err)
 			}
@@ -174,9 +174,12 @@ func (lsm *LSM) splitTable(m *memdb.DB) error {
 		}
 	})
 
-	fmt.Println("split last", string(db.FirstKey()), string(db.LastKey()))
+	// dump last table.
+	pool.Go(func() error {
+		return lsm.dumpTable(1, db)
+	})
 
-	if err := lsm.dumpTable(1, db); err != nil {
+	if err := pool.Wait(); err != nil {
 		panic(err)
 	}
 
@@ -260,6 +263,10 @@ func (lsm *LSM) compactLevel() error {
 	}
 	// delete query ref count.
 	defer lsm.ref.Incr(-1, names...)
+
+	if len(tables) <= 1 {
+		return nil
+	}
 
 	// merge all tables.
 	t := tables[0]

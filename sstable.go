@@ -123,7 +123,10 @@ func NewSSTable(path string) (*SSTable, error) {
 		return nil, err
 	}
 
-	table := &SSTable{fd: fd}
+	table := &SSTable{
+		fd: fd,
+		m:  memdb.New(8 * 1024 * 1024),
+	}
 	if err := table.loadIndex(); err != nil {
 		return nil, err
 	}
@@ -204,7 +207,6 @@ func (s *SSTable) loadDataBlock(entry *pb.IndexBlockEntry) (bool, error) {
 	}
 
 	// put to memtable.
-	s.m = memdb.New()
 	for i, k := range s.dataBlock.Keys {
 		if err := s.m.Put(k, s.dataBlock.Values[i], uint16(s.dataBlock.Types[i])); err != nil {
 			panic(err)

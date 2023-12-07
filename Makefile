@@ -4,8 +4,8 @@ gen-proto:
 test-cover:
 	go test -race \
 	-coverpkg=./... ./memdb ./refmap \
-	-coverprofile=cover.txt -covermode=atomic
-	go tool cover -html=cover.txt -o coverage.html
+	-coverprofile=coverage.txt -covermode=atomic
+	go tool cover -html=coverage.txt -o coverage.html
 
 clear:
 	rm -f *.sst

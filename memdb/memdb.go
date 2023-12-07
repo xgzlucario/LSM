@@ -2,8 +2,6 @@ package memdb
 
 import (
 	"errors"
-	"fmt"
-	"sync/atomic"
 
 	"github.com/andy-kimball/arenaskl"
 )
@@ -15,21 +13,16 @@ const (
 	// key-value pair type.
 	typeVal uint16 = 1
 	typeDel uint16 = 2
-
-	// permission.
-	permReadOnly  uint32 = 1
-	permReadWrite uint32 = 2
 )
 
 var (
-	ErrImmutable = errors.New("memdb/panic: change an immutable db")
+	ErrImmutable = errors.New("memdb/panic: attempt to change an immutable db")
 )
 
-// MemDB is the memory db of LSM-Tree.
+// DB is the memory db of LSM-Tree.
 type DB struct {
-	perm uint32
-	skl  *arenaskl.Skiplist
-	it   *arenaskl.Iterator
+	skl *arenaskl.Skiplist
+	it  *arenaskl.Iterator
 }
 
 // New
@@ -46,24 +39,6 @@ func New(sizes ...uint32) *DB {
 	return &DB{skl: skl, it: &it}
 }
 
-// Rotate change permission to read-only.
-func (db *DB) Rotate() {
-	atomic.StoreUint32(&db.perm, permReadOnly)
-}
-
-// Immutable check perm is read-only.
-func (db *DB) check() {
-	if atomic.LoadUint32(&db.perm) == permReadOnly {
-		panic(ErrImmutable)
-	}
-}
-
-// Reset clear memdb and change perm to read-write.
-func (db *DB) Reset() {
-	db.skl.Arena().Reset()
-	atomic.StoreUint32(&db.perm, permReadWrite)
-}
-
 // Get
 func (db *DB) Get(key []byte) ([]byte, bool) {
 	if db.seek(key) {
@@ -74,17 +49,13 @@ func (db *DB) Get(key []byte) ([]byte, bool) {
 
 // Put
 func (db *DB) Put(key, value []byte, vtype uint16) error {
-	db.check()
 	return db.it.Add(key, value, vtype)
 }
 
 // PutFull
 func (db *DB) PutIsFull(key, value []byte, vtype uint16) (bool, error) {
 	err := db.Put(key, value, vtype)
-	if err != nil {
-		return errors.Is(err, arenaskl.ErrArenaFull), err
-	}
-	return false, nil
+	return errors.Is(err, arenaskl.ErrArenaFull), err
 }
 
 // FirstKey
@@ -114,8 +85,6 @@ func (db *DB) seek(key []byte) bool {
 
 // Merge
 func (db *DB) Merge(tables ...*DB) {
-	db.check()
-
 	size := db.skl.Arena().Cap()
 	for _, t := range tables {
 		size += t.skl.Arena().Cap()
@@ -144,7 +113,4 @@ func (db *DB) Merge(tables ...*DB) {
 	}
 
 	*db = *newdb
-
-	fmt.Println("merge:", string(db.FirstKey()))
-	fmt.Println("merge:", string(db.LastKey()))
 }
