@@ -13,6 +13,14 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/xgzlucario/LSM/memdb"
+	"github.com/xgzlucario/LSM/refmap"
+)
+
+const (
+	KB = 1 << 10
+	MB = 1 << 20
 )
 
 // configuration for LSM-Tree.
@@ -29,18 +37,18 @@ type LSM struct {
 	index uint64
 	path  string
 
-	// RefCounter have two parts:
+	// RefMap have two parts:
 	// 1. Storage System (indicating what is valid data)
 	// 2. Query (referenced when querying or compaction)
 	// sstable is removed from the file system when the ref count is 0.
-	ref *RefCounter
+	ref *refmap.Map
 
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu sync.RWMutex
-	m  *MemTable
-	im []*MemTable
+	mu     sync.RWMutex
+	db     *memdb.DB
+	dbList []*memdb.DB
 
 	compactC chan struct{}
 
@@ -54,10 +62,10 @@ func NewLSM(dir string) (*LSM, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	lsm := &LSM{
 		path:     dir,
-		ref:      NewRefCounter(),
+		ref:      refmap.New(),
 		ctx:      ctx,
 		cancel:   cancel,
-		m:        NewMemTable(),
+		db:       memdb.New(),
 		compactC: make(chan struct{}, 1),
 		logger:   slog.Default(),
 	}
@@ -95,15 +103,19 @@ func NewLSM(dir string) (*LSM, error) {
 
 // Put
 func (lsm *LSM) Put(key, value []byte) error {
-	// if memtable is full, rotate to immutable.
-	if lsm.m.Full() {
-		m := NewMemTable()
+	full, err := lsm.db.PutIsFull(key, value, 1)
+	// memdb is full.
+	if full {
+		newdb := memdb.New()
 		lsm.mu.Lock()
-		lsm.im = append(lsm.im, lsm.m)
-		lsm.m = m
+		lsm.db.Rotate()
+		lsm.dbList = append(lsm.dbList, lsm.db)
+		lsm.db = newdb
 		lsm.mu.Unlock()
+
+		return lsm.db.Put(key, value, 1)
 	}
-	return lsm.m.Put(key, value)
+	return err
 }
 
 // Get
@@ -123,7 +135,7 @@ func (lsm *LSM) Close() error {
 }
 
 // dumpTable dump immutable memtable to sstable.
-func (lsm *LSM) dumpTable(level int, m *MemTable) error {
+func (lsm *LSM) dumpTable(level int, m *memdb.DB) error {
 	name := fmt.Sprintf("%06d_%s_%s-L%d.sst",
 		atomic.AddUint64(&lsm.index, 1),
 		m.FirstKey(),
@@ -140,29 +152,33 @@ func (lsm *LSM) dumpTable(level int, m *MemTable) error {
 }
 
 // splitTable
-func (lsm *LSM) splitTable(m *MemTable) error {
-	lsm.log("split dump start")
-
-	sm := NewMemTable()
+func (lsm *LSM) splitTable(m *memdb.DB) error {
+	db := memdb.New()
 	m.Iter(func(key, value []byte, meta uint16) {
-		if sm.Full() {
-			if err := lsm.dumpTable(1, sm); err != nil {
-				panic(err)
-			}
-			sm = NewMemTable()
+		if full, err := db.PutIsFull(key, value, meta); full {
+			// dump
+			fmt.Println("split", string(db.FirstKey()), string(db.LastKey()))
 
-		} else {
-			if err := sm.PutRaw(key, value, meta); err != nil {
+			if err := lsm.dumpTable(1, db); err != nil {
 				panic(err)
 			}
+
+			// reset
+			db.Reset()
+			if err := db.Put(key, value, meta); err != nil {
+				panic(err)
+			}
+
+		} else if err != nil {
+			panic(err)
 		}
 	})
 
-	if err := lsm.dumpTable(1, sm); err != nil {
+	fmt.Println("split last", string(db.FirstKey()), string(db.LastKey()))
+
+	if err := lsm.dumpTable(1, db); err != nil {
 		panic(err)
 	}
-
-	lsm.log("split dump end")
 
 	return nil
 }
@@ -173,8 +189,8 @@ func (lsm *LSM) MinorCompact() {
 
 	lsm.mu.Lock()
 	// need dump list.
-	list := slices.Clone(lsm.im)
-	lsm.im = lsm.im[:0]
+	list := slices.Clone(lsm.dbList)
+	lsm.dbList = lsm.dbList[:0]
 	lsm.mu.Unlock()
 
 	for _, m := range list {

@@ -1,4 +1,4 @@
-package lsm
+package memdb
 
 import (
 	"bytes"
@@ -8,19 +8,19 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestMerge(t *testing.T) {
+func TestMemDB(t *testing.T) {
 	assert := assert.New(t)
-	m1 := NewMemTable()
+	m1 := New()
 
 	for i := 1000; i < 5000; i++ {
 		k := []byte(strconv.Itoa(i))
-		m1.Put(k, k)
+		m1.Put(k, k, typeVal)
 	}
 
-	m2 := NewMemTable()
+	m2 := New()
 	for i := 2000; i < 6000; i++ {
 		k := []byte(strconv.Itoa(i))
-		m2.Put(k, k)
+		m2.Put(k, k, typeVal)
 	}
 
 	m1.Merge(m2)
@@ -32,11 +32,11 @@ func TestMerge(t *testing.T) {
 	})
 
 	// Update
-	m3 := NewMemTable()
+	m3 := New()
 	for i := 5000; i < 7000; i++ {
 		k := []byte(strconv.Itoa(i))
 		v := []byte("value" + strconv.Itoa(i))
-		m3.Put(k, v)
+		m3.Put(k, v, typeVal)
 	}
 	m1.Merge(m3)
 	assert.Equal("1000", string(m1.FirstKey()))

@@ -1,8 +1,9 @@
-package lsm
+package table
 
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"hash/crc32"
 	"io"
 	"os"
@@ -13,14 +14,20 @@ import (
 )
 
 const (
-	typeVal uint16 = 1
-	typeDel uint16 = 2
-
 	footerSize = 8 + 4
+
+	MemTableSize  = 4 * 1 << 20
+	DataBlockSize = 4 * 1 << 10
 )
 
 var (
 	order = binary.LittleEndian
+)
+
+var (
+	ErrKeyNotFound = errors.New("[table] key not found")
+
+	ErrCRCChecksum = errors.New("[table] crc checksum error")
 )
 
 // SSTable
