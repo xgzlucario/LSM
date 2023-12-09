@@ -1,52 +1,131 @@
 package memdb
 
 import (
-	"bytes"
+	"fmt"
 	"strconv"
+	"strings"
 	"testing"
 
+	"github.com/andy-kimball/arenaskl"
 	"github.com/stretchr/testify/assert"
 )
 
-func TestMemDB(t *testing.T) {
+const (
+	testMemDBSize = 4 * 1 << 20 // 4 MB
+)
+
+var (
+	nilBytes []byte
+)
+
+func getKey(i int) []byte {
+	return []byte(fmt.Sprintf("%08d", i))
+}
+
+func getMemDB(start, end int) *DB {
+	m := New(testMemDBSize)
+	for i := start; i < end; i++ {
+		k := getKey(i)
+		m.Put(k, k, typeVal)
+	}
+	return m
+}
+
+func checkData(m *DB, start, end int, assert *assert.Assertions) {
+	// check firstKey and lastKey.
+	firstKey := []byte(fmt.Sprintf("%08d", start))
+	lastKey := []byte(fmt.Sprintf("%08d", end-1))
+	assert.Equal(firstKey, m.FirstKey())
+	assert.Equal(lastKey, m.LastKey())
+
+	// check 0-start.
+	for i := 0; i < start; i++ {
+		k := getKey(i)
+		value, ok := m.Get(k)
+		assert.Equal(nilBytes, value)
+		assert.False(ok)
+	}
+
+	// check start-end.
+	for i := start; i < end; i++ {
+		k := getKey(i)
+		value, ok := m.Get(k)
+		assert.Equal(k, value)
+		assert.True(ok)
+	}
+
+	// check end-end*2.
+	for i := end; i < end*2; i++ {
+		k := getKey(i)
+		value, ok := m.Get(k)
+		assert.Equal(nilBytes, value)
+		assert.False(ok)
+	}
+}
+
+func TestGet(t *testing.T) {
 	assert := assert.New(t)
-	m1 := New()
+	m := getMemDB(0, 10000)
 
-	for i := 1000; i < 5000; i++ {
-		k := []byte(strconv.Itoa(i))
-		m1.Put(k, k, typeVal)
-	}
+	// check cap.
+	assert.Equal(uint32(testMemDBSize), m.Capacity())
 
-	m2 := New()
-	for i := 2000; i < 6000; i++ {
-		k := []byte(strconv.Itoa(i))
-		m2.Put(k, k, typeVal)
-	}
+	for i := 0; i < 20000; i++ {
+		k := getKey(i)
+		value, ok := m.Get(k)
 
-	m1.Merge(m2)
-	assert.Equal("1000", string(m1.FirstKey()))
-	assert.Equal("5999", string(m1.LastKey()))
-
-	m1.Iter(func(key, value []byte, vtype uint16) {
-		assert.Equal(key, value)
-	})
-
-	// Update
-	m3 := New()
-	for i := 5000; i < 7000; i++ {
-		k := []byte(strconv.Itoa(i))
-		v := []byte("value" + strconv.Itoa(i))
-		m3.Put(k, v, typeVal)
-	}
-	m1.Merge(m3)
-	assert.Equal("1000", string(m1.FirstKey()))
-	assert.Equal("6999", string(m1.LastKey()))
-
-	m1.Iter(func(key, value []byte, vtype uint16) {
-		if bytes.Compare(key, []byte("5000")) >= 0 && bytes.Compare(key, []byte("7000")) < 0 {
-			assert.Equal("value"+string(key), string(value))
+		if i < 10000 {
+			assert.Equal(k, value)
+			assert.True(ok)
 		} else {
-			assert.Equal(string(key), string(value))
+			assert.Equal(nilBytes, value)
+			assert.False(ok)
 		}
-	})
+	}
+}
+
+func TestPutIfFull(t *testing.T) {
+	assert := assert.New(t)
+	m := New(1024)
+
+	// check cap.
+	assert.Equal(uint32(1024), m.Capacity())
+
+	// ok.
+	for i := 0; i < 10; i++ {
+		k := []byte(strconv.Itoa(i))
+		full, err := m.PutIsFull(k, k, typeVal)
+		assert.False(full)
+		assert.Nil(err)
+	}
+
+	// overflow.
+	for i := 0; i < 100; i++ {
+		k := []byte(strings.Repeat(strconv.Itoa(i), 1024))
+		full, err := m.PutIsFull(k, k, typeVal)
+		assert.True(full)
+		assert.Equal(err, arenaskl.ErrArenaFull)
+	}
+}
+
+func TestMerge(t *testing.T) {
+	assert := assert.New(t)
+	{
+		m1 := getMemDB(0, 10000)
+		m2 := getMemDB(10000, 20000)
+		m1.Merge(m2)
+		// check cap.
+		assert.Equal(uint32(testMemDBSize*2), m1.Capacity())
+		// check data.
+		checkData(m1, 0, 20000, assert)
+	}
+	{
+		m1 := getMemDB(0, 15000)
+		m2 := getMemDB(10000, 20000)
+		m1.Merge(m2)
+		// check cap.
+		assert.Equal(uint32(testMemDBSize*2), m1.Capacity())
+		// check data.
+		checkData(m1, 0, 20000, assert)
+	}
 }

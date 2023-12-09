@@ -15,9 +15,6 @@ import (
 
 const (
 	footerSize = 8 + 4
-
-	MemTableSize  = 4 * 1 << 20
-	DataBlockSize = 4 * 1 << 10
 )
 
 var (
@@ -25,14 +22,15 @@ var (
 )
 
 var (
-	ErrKeyNotFound = errors.New("[table] key not found")
+	ErrKeyNotFound = errors.New("table: key not found")
 
-	ErrCRCChecksum = errors.New("[table] crc checksum error")
+	ErrChecksum = errors.New("table: crc checksum error")
 )
 
 // SSTable
 type SSTable struct {
-	fd *os.File
+	fd        *os.File
+	memdbSize uint32
 
 	// MemTable is the container for data in memory.
 	// When lookup a table, the data from the corresponding dataBlock on disk is first
@@ -41,9 +39,6 @@ type SSTable struct {
 
 	// indexBlock is the index of dataBlocks, loaded when the table is opened.
 	indexBlock pb.IndexBlock
-
-	// dataBlock is the container for data on disk.
-	dataBlock pb.DataBlock
 }
 
 // Footer
@@ -66,8 +61,8 @@ type Footer struct {
 // |     footer      | ---+
 // +-----------------+
 // EncodeTable encode a memtable to bytes.
-func EncodeTable(m *memdb.DB) []byte {
-	buf := bytes.NewBuffer(make([]byte, 0, MemTableSize))
+func EncodeTable(m *memdb.DB, dataBlockSize uint32) []byte {
+	buf := bytes.NewBuffer(make([]byte, 0, m.Capacity()))
 	var size uint32
 
 	// initial.
@@ -80,7 +75,7 @@ func EncodeTable(m *memdb.DB) []byte {
 	// encode data block function.
 	encodeDataBlock := func() {
 		src, _ := proto.Marshal(dataBlock)
-		dst := compress(src, nil)
+		dst := compress(src)
 
 		indexBlock.Entries = append(indexBlock.Entries, &pb.IndexBlockEntry{
 			LastKey: dataBlock.Keys[len(dataBlock.Keys)-1],
@@ -97,10 +92,10 @@ func EncodeTable(m *memdb.DB) []byte {
 		dataBlock.Keys = append(dataBlock.Keys, key)
 		dataBlock.Values = append(dataBlock.Values, value)
 		dataBlock.Types = append(dataBlock.Types, byte(meta))
-		size += uint32(len(key) + len(value) + 1)
+		size += uint32(len(key) + len(value) + 2)
 
 		// when reach the threshold, generate a new data block.
-		if size >= DataBlockSize {
+		if size >= dataBlockSize {
 			encodeDataBlock()
 		}
 	})
@@ -124,18 +119,26 @@ func EncodeTable(m *memdb.DB) []byte {
 }
 
 // NewSSTable create a sstable with decode index.
-func NewSSTable(path string) (*SSTable, error) {
+func NewSSTable(path string, memdbSize uint32) (*SSTable, error) {
 	fd, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 
-	table := &SSTable{fd: fd}
+	table := &SSTable{
+		fd:        fd,
+		memdbSize: memdbSize,
+	}
 	if err := table.loadIndex(); err != nil {
 		return nil, err
 	}
 
 	return table, nil
+}
+
+// GetMemDB
+func (s *SSTable) GetMemDB() *memdb.DB {
+	return s.m
 }
 
 // Close
@@ -162,7 +165,7 @@ func (s *SSTable) loadIndex() error {
 		return err
 	}
 	if crc32.ChecksumIEEE(buf) != footer.CRC {
-		return ErrCRCChecksum
+		return ErrChecksum
 	}
 
 	return proto.Unmarshal(buf, &s.indexBlock)
@@ -197,7 +200,7 @@ func (s *SSTable) loadDataBlock(entry *pb.IndexBlockEntry) (bool, error) {
 	if entry.Cached {
 		return false, nil
 	}
-	// read and decode.
+	// load and decode from disk.
 	src, err := seekRead(s.fd, int64(entry.Offset), uint64(entry.Size), io.SeekStart)
 	if err != nil {
 		return false, err
@@ -206,14 +209,18 @@ func (s *SSTable) loadDataBlock(entry *pb.IndexBlockEntry) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if err = proto.Unmarshal(dst, &s.dataBlock); err != nil {
+
+	var dataBlock pb.DataBlock
+	if err = proto.Unmarshal(dst, &dataBlock); err != nil {
 		return false, err
 	}
 
 	// put to memtable.
-	s.m = memdb.New()
-	for i, k := range s.dataBlock.Keys {
-		if err := s.m.Put(k, s.dataBlock.Values[i], uint16(s.dataBlock.Types[i])); err != nil {
+	if s.m == nil {
+		s.m = memdb.New(uint32(float64(s.memdbSize) * 1.1))
+	}
+	for i, k := range dataBlock.Keys {
+		if err := s.m.Put(k, dataBlock.Values[i], uint16(dataBlock.Types[i])); err != nil {
 			panic(err)
 		}
 	}

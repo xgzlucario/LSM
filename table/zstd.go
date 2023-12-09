@@ -11,7 +11,8 @@ var (
 	decoder, _ = zstd.NewReader(nil)
 )
 
-func compress(src, dst []byte) []byte {
+func compress(src []byte) []byte {
+	dst := make([]byte, 0, len(src)/4)
 	return encoder.EncodeAll(src, dst)
 }
 

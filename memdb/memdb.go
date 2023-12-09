@@ -7,36 +7,29 @@ import (
 )
 
 const (
-	// the default mem db size.
-	MEM_DB_SIZE uint32 = 4 << 20
-
 	// key-value pair type.
 	typeVal uint16 = 1
 	typeDel uint16 = 2
 )
 
 var (
-	ErrImmutable = errors.New("memdb/panic: attempt to change an immutable db")
+	ErrImmutable = errors.New("memdb: attempt to change an immutable db")
 )
 
 // DB is the memory db of LSM-Tree.
 type DB struct {
+	cap uint32
 	skl *arenaskl.Skiplist
 	it  *arenaskl.Iterator
 }
 
 // New
-func New(sizes ...uint32) *DB {
-	size := MEM_DB_SIZE
-	if len(sizes) > 0 {
-		size = sizes[0]
-	}
-
-	skl := arenaskl.NewSkiplist(arenaskl.NewArena(size))
+func New(cap uint32) *DB {
+	skl := arenaskl.NewSkiplist(arenaskl.NewArena(cap))
 	var it arenaskl.Iterator
 	it.Init(skl)
 
-	return &DB{skl: skl, it: &it}
+	return &DB{cap: cap, skl: skl, it: &it}
 }
 
 // Get
@@ -45,6 +38,11 @@ func (db *DB) Get(key []byte) ([]byte, bool) {
 		return db.it.Value(), true
 	}
 	return nil, false
+}
+
+// Get
+func (db *DB) Capacity() uint32 {
+	return db.cap
 }
 
 // Put
@@ -72,6 +70,9 @@ func (db *DB) LastKey() []byte {
 
 // Iter
 func (db *DB) Iter(f func([]byte, []byte, uint16)) {
+	if db == nil {
+		panic("memdb/Iter: nil db")
+	}
 	for db.it.SeekToFirst(); db.it.Valid(); db.it.Next() {
 		f(db.it.Key(), db.it.Value(), db.it.Meta())
 	}
@@ -84,13 +85,12 @@ func (db *DB) seek(key []byte) bool {
 }
 
 // Merge
-func (db *DB) Merge(tables ...*DB) {
-	size := db.skl.Arena().Cap()
-	for _, t := range tables {
-		size += t.skl.Arena().Cap()
+func (db *DB) Merge(dbs ...*DB) {
+	cap := db.cap
+	for _, m := range dbs {
+		cap += m.cap
 	}
-
-	newdb := New(size)
+	newdb := New(cap)
 
 	db.Iter(func(key, value []byte, vtype uint16) {
 		if err := newdb.Put(key, value, vtype); err != nil {
@@ -98,8 +98,8 @@ func (db *DB) Merge(tables ...*DB) {
 		}
 	})
 
-	for _, t := range tables {
-		t.Iter(func(key, value []byte, vtype uint16) {
+	for _, m := range dbs {
+		m.Iter(func(key, value []byte, vtype uint16) {
 			if newdb.seek(key) {
 				if err := newdb.it.Set(value, vtype); err != nil {
 					panic(err)

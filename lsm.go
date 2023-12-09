@@ -16,27 +16,17 @@ import (
 
 	"github.com/sourcegraph/conc/pool"
 	"github.com/xgzlucario/LSM/memdb"
+	"github.com/xgzlucario/LSM/option"
 	"github.com/xgzlucario/LSM/refmap"
-)
-
-const (
-	KB = 1 << 10
-	MB = 1 << 20
-)
-
-// configuration for LSM-Tree.
-var (
-	MemTableSize  uint32 = 4 * MB
-	DataBlockSize uint32 = 4 * KB
-
-	MinorCompactInterval = time.Second
-	MajorCompactInterval = 5 * time.Second
+	"github.com/xgzlucario/LSM/table"
 )
 
 // LSM-Tree defination.
 type LSM struct {
+	*option.Option
+
 	index uint64
-	path  string
+	dir   string
 
 	// RefMap have two parts:
 	// 1. Storage System (indicating what is valid data)
@@ -57,16 +47,19 @@ type LSM struct {
 }
 
 // NewLSM
-func NewLSM(dir string) (*LSM, error) {
-	os.MkdirAll(dir, 0755)
+func NewLSM(dir string, opt *option.Option) (*LSM, error) {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, err
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	lsm := &LSM{
-		path:     dir,
+		Option:   opt,
+		dir:      dir,
 		ref:      refmap.New(),
 		ctx:      ctx,
 		cancel:   cancel,
-		db:       memdb.New(),
+		db:       memdb.New(opt.MemDBSize),
 		compactC: make(chan struct{}, 1),
 		logger:   slog.Default(),
 	}
@@ -75,7 +68,7 @@ func NewLSM(dir string) (*LSM, error) {
 	go func() {
 		for {
 			select {
-			case <-time.After(MinorCompactInterval):
+			case <-time.After(lsm.MinorCompactInterval):
 				lsm.MinorCompact()
 
 			case <-lsm.ctx.Done():
@@ -88,7 +81,7 @@ func NewLSM(dir string) (*LSM, error) {
 	go func() {
 		for {
 			select {
-			case <-time.After(MajorCompactInterval):
+			case <-time.After(lsm.MajorCompactInterval):
 				lsm.MajorCompact()
 
 			case <-lsm.ctx.Done():
@@ -107,7 +100,7 @@ func (lsm *LSM) Put(key, value []byte) error {
 	full, err := lsm.db.PutIsFull(key, value, 1)
 	// memdb is full.
 	if full {
-		newdb := memdb.New()
+		newdb := memdb.New(lsm.MemDBSize)
 		lsm.mu.Lock()
 		lsm.dbList = append(lsm.dbList, lsm.db)
 		lsm.db = newdb
@@ -142,19 +135,20 @@ func (lsm *LSM) dumpTable(level int, m *memdb.DB) error {
 		m.LastKey(),
 		level,
 	)
+	src := table.EncodeTable(m, lsm.DataBlockSize)
 
 	// add storage ref count.
 	lsm.ref.Incr(1, name)
 
 	lsm.log("dump table %s", name)
 
-	return os.WriteFile(path.Join(lsm.path, name), EncodeTable(m), 0644)
+	return os.WriteFile(path.Join(lsm.dir, name), src, 0644)
 }
 
 // splitTable
 func (lsm *LSM) splitTable(m *memdb.DB) error {
 	pool := pool.New().WithErrors()
-	db := memdb.New()
+	db := memdb.New(lsm.MemDBSize)
 
 	m.Iter(func(key, value []byte, meta uint16) {
 		if full, err := db.PutIsFull(key, value, meta); full {
@@ -164,7 +158,7 @@ func (lsm *LSM) splitTable(m *memdb.DB) error {
 			})
 
 			// create new memdb.
-			db = memdb.New()
+			db = memdb.New(lsm.MemDBSize)
 			if err := db.Put(key, value, meta); err != nil {
 				panic(err)
 			}
@@ -206,11 +200,11 @@ func (lsm *LSM) MinorCompact() {
 }
 
 // loadAllTables
-func (lsm *LSM) loadAllTables() ([]*SSTable, []string, error) {
-	tables := make([]*SSTable, 0, 16)
+func (lsm *LSM) loadAllTables() ([]*table.SSTable, []string, error) {
+	tables := make([]*table.SSTable, 0, 16)
 	names := make([]string, 0, 16)
 
-	filepath.WalkDir(lsm.path, func(path string, entry fs.DirEntry, err error) error {
+	filepath.WalkDir(lsm.dir, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			panic(err)
 		}
@@ -223,7 +217,7 @@ func (lsm *LSM) loadAllTables() ([]*SSTable, []string, error) {
 		// add query ref count.
 		lsm.ref.Incr(1, name)
 
-		sst, err := NewSSTable(path)
+		sst, err := table.NewSSTable(path, lsm.MemDBSize)
 		if err != nil {
 			panic(err)
 		}
@@ -245,8 +239,8 @@ func (lsm *LSM) MajorCompact() {
 		panic(err)
 	}
 
-	lsm.ref.DelZero(func(s string) {
-		if err := os.Remove(path.Join(lsm.path, s)); err != nil {
+	lsm.ref.DelZero(func(tableName string) {
+		if err := os.Remove(path.Join(lsm.dir, tableName)); err != nil {
 			panic(err)
 		}
 	})
@@ -273,7 +267,7 @@ func (lsm *LSM) compactLevel() error {
 	t.Merge(tables[1:]...)
 
 	// split tables.
-	if err := lsm.splitTable(t.m); err != nil {
+	if err := lsm.splitTable(t.GetMemDB()); err != nil {
 		panic(err)
 	}
 

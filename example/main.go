@@ -5,6 +5,7 @@ import (
 	"time"
 
 	lsm "github.com/xgzlucario/LSM"
+	"github.com/xgzlucario/LSM/option"
 )
 
 func main() {
@@ -21,7 +22,7 @@ func main() {
 	// 	db.Put(k, k, nil)
 	// }
 
-	lsm, err := lsm.NewLSM("lsm")
+	lsm, err := lsm.NewLSM("lsm", option.DefaultOption)
 	if err != nil {
 		panic(err)
 	}

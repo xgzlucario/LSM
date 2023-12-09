@@ -6,12 +6,12 @@ import (
 )
 
 func BenchmarkPut(b *testing.B) {
-	mdb := New()
+	mdb := New(testMemDBSize)
 	for i := 0; i < b.N; i++ {
 		k := []byte(fmt.Sprintf("%08d", i))
-		
+
 		if full, err := mdb.PutIsFull(k, k, typeVal); full {
-			mdb = New()
+			mdb = New(testMemDBSize)
 
 		} else if err != nil {
 			panic(err)
@@ -20,7 +20,7 @@ func BenchmarkPut(b *testing.B) {
 }
 
 func BenchmarkGet(b *testing.B) {
-	mdb := New()
+	mdb := New(testMemDBSize)
 	for i := 0; i < 10000; i++ {
 		k := []byte(fmt.Sprintf("%08d", i))
 		mdb.Put(k, k, typeVal)
