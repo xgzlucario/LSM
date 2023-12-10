@@ -1,5 +1,4 @@
 syntax = "proto3";
-package cache;
 option go_package = "github.com/xgzlucario/LSM/pb";
 
 message DataBlock {
@@ -11,12 +10,14 @@ message DataBlock {
 message IndexBlockEntry {
     bytes lastKey = 1;
     uint32 offset = 2;
-    uint32 size = 3;
-    bool cached = 4;
+    uint32 size = 3;   // binary size of the data block.
+    uint32 length = 4; // data legnth of the data block.
+    bool cached = 5;
 }
 
 message IndexBlock {
     bytes firstKey = 1;
     bytes lastKey = 2;
-    repeated IndexBlockEntry entries = 3;
+    uint32 level = 3;
+    repeated IndexBlockEntry entries = 4;
 }

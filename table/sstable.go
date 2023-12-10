@@ -15,6 +15,8 @@ import (
 
 const (
 	footerSize = 8 + 4
+
+	tableNameExt = ".sst"
 )
 
 var (
@@ -63,7 +65,7 @@ type Footer struct {
 // EncodeTable encode a memtable to bytes.
 func EncodeTable(m *memdb.DB, dataBlockSize uint32) []byte {
 	buf := bytes.NewBuffer(make([]byte, 0, m.Capacity()))
-	var size uint32
+	var size, length uint32
 
 	// initial.
 	dataBlock := new(pb.DataBlock)
@@ -81,17 +83,21 @@ func EncodeTable(m *memdb.DB, dataBlockSize uint32) []byte {
 			LastKey: dataBlock.Keys[len(dataBlock.Keys)-1],
 			Offset:  uint32(buf.Len()),
 			Size:    uint32(len(dst)),
+			Length:  length,
 		})
 		buf.Write(dst)
 
 		dataBlock.Reset()
 		size = 0
+		length = 0
 	}
 
 	m.Iter(func(key, value []byte, meta uint16) {
 		dataBlock.Keys = append(dataBlock.Keys, key)
 		dataBlock.Values = append(dataBlock.Values, value)
 		dataBlock.Types = append(dataBlock.Types, byte(meta))
+
+		length++
 		size += uint32(len(key) + len(value) + 2)
 
 		// when reach the threshold, generate a new data block.
@@ -136,6 +142,11 @@ func NewSSTable(path string, memdbSize uint32) (*SSTable, error) {
 	return table, nil
 }
 
+// GetLevel
+func (s *SSTable) GetLevel() uint32 {
+	return s.indexBlock.Level
+}
+
 // GetMemDB
 func (s *SSTable) GetMemDB() *memdb.DB {
 	return s.m
@@ -171,9 +182,9 @@ func (s *SSTable) loadIndex() error {
 	return proto.Unmarshal(buf, &s.indexBlock)
 }
 
-// findKey return value by find sstable.
+// FindKey return value by find sstable.
 // cached indicates whether the data hit the cache.
-func (s *SSTable) findKey(key []byte) (res []byte, cached bool, err error) {
+func (s *SSTable) FindKey(key []byte) (res []byte, cached bool, err error) {
 	for _, entry := range s.indexBlock.Entries {
 		if bytes.Compare(key, entry.LastKey) <= 0 {
 			// load cache.
