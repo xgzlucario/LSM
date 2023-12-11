@@ -200,8 +200,8 @@ func (lsm *LSM) MinorCompact() {
 }
 
 // loadAllTables
-func (lsm *LSM) loadAllTables() ([]*table.SSTable, []string, error) {
-	tables := make([]*table.SSTable, 0, 16)
+func (lsm *LSM) loadAllTables() ([]*table.Table, []string, error) {
+	tables := make([]*table.Table, 0, 16)
 	names := make([]string, 0, 16)
 
 	filepath.WalkDir(lsm.dir, func(path string, entry fs.DirEntry, err error) error {
@@ -217,7 +217,7 @@ func (lsm *LSM) loadAllTables() ([]*table.SSTable, []string, error) {
 		// add query ref count.
 		lsm.ref.Incr(1, name)
 
-		sst, err := table.NewSSTable(path, lsm.MemDBSize)
+		sst, err := table.NewTable(path, lsm.Option)
 		if err != nil {
 			panic(err)
 		}

@@ -9,14 +9,16 @@ import (
 	"os"
 
 	"github.com/xgzlucario/LSM/memdb"
+	"github.com/xgzlucario/LSM/option"
 	"github.com/xgzlucario/LSM/pb"
 	"google.golang.org/protobuf/proto"
 )
 
 const (
-	footerSize = 8 + 4
+	// indexBlockSize + crc + magicNumber
+	footerSize = 8 + 4 + 8
 
-	tableNameExt = ".sst"
+	magicNumber = ""
 )
 
 var (
@@ -26,13 +28,15 @@ var (
 var (
 	ErrKeyNotFound = errors.New("table: key not found")
 
-	ErrChecksum = errors.New("table: crc checksum error")
+	ErrChecksum = errors.New("table: invalid crc checksum")
+
+	ErrMagicNumber = errors.New("table: invalid magic number")
 )
 
-// SSTable
-type SSTable struct {
-	fd        *os.File
-	memdbSize uint32
+// Table
+type Table struct {
+	fd  *os.File
+	opt *option.Option
 
 	// MemTable is the container for data in memory.
 	// When lookup a table, the data from the corresponding dataBlock on disk is first
@@ -47,6 +51,7 @@ type SSTable struct {
 type Footer struct {
 	IndexBlockSize uint64
 	CRC            uint32
+	MagicNumber    uint64
 }
 
 // +-----------------+
@@ -124,17 +129,14 @@ func EncodeTable(m *memdb.DB, dataBlockSize uint32) []byte {
 	return buf.Bytes()
 }
 
-// NewSSTable create a sstable with decode index.
-func NewSSTable(path string, memdbSize uint32) (*SSTable, error) {
+// NewTable create a sstable with decode index.
+func NewTable(path string, opt *option.Option) (*Table, error) {
 	fd, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 
-	table := &SSTable{
-		fd:        fd,
-		memdbSize: memdbSize,
-	}
+	table := &Table{fd: fd, opt: opt}
 	if err := table.loadIndex(); err != nil {
 		return nil, err
 	}
@@ -143,22 +145,22 @@ func NewSSTable(path string, memdbSize uint32) (*SSTable, error) {
 }
 
 // GetLevel
-func (s *SSTable) GetLevel() uint32 {
+func (s *Table) GetLevel() uint32 {
 	return s.indexBlock.Level
 }
 
 // GetMemDB
-func (s *SSTable) GetMemDB() *memdb.DB {
+func (s *Table) GetMemDB() *memdb.DB {
 	return s.m
 }
 
 // Close
-func (s *SSTable) Close() error {
+func (s *Table) Close() error {
 	return s.fd.Close()
 }
 
 // loadIndex load index block.
-func (s *SSTable) loadIndex() error {
+func (s *Table) loadIndex() error {
 	buf, err := seekRead(s.fd, -footerSize, footerSize, io.SeekEnd)
 	if err != nil {
 		return err
@@ -184,7 +186,7 @@ func (s *SSTable) loadIndex() error {
 
 // FindKey return value by find sstable.
 // cached indicates whether the data hit the cache.
-func (s *SSTable) FindKey(key []byte) (res []byte, cached bool, err error) {
+func (s *Table) FindKey(key []byte) (res []byte, cached bool, err error) {
 	for _, entry := range s.indexBlock.Entries {
 		if bytes.Compare(key, entry.LastKey) <= 0 {
 			// load cache.
@@ -207,7 +209,7 @@ func (s *SSTable) FindKey(key []byte) (res []byte, cached bool, err error) {
 }
 
 // loadDataBlock load data block to cache.
-func (s *SSTable) loadDataBlock(entry *pb.IndexBlockEntry) (bool, error) {
+func (s *Table) loadDataBlock(entry *pb.IndexBlockEntry) (bool, error) {
 	if entry.Cached {
 		return false, nil
 	}
@@ -228,7 +230,7 @@ func (s *SSTable) loadDataBlock(entry *pb.IndexBlockEntry) (bool, error) {
 
 	// put to memtable.
 	if s.m == nil {
-		s.m = memdb.New(uint32(float64(s.memdbSize) * 1.1))
+		s.m = memdb.New(uint32(float64(s.opt.MemDBSize) * 1.1))
 	}
 	for i, k := range dataBlock.Keys {
 		if err := s.m.Put(k, dataBlock.Values[i], uint16(dataBlock.Types[i])); err != nil {
@@ -241,7 +243,7 @@ func (s *SSTable) loadDataBlock(entry *pb.IndexBlockEntry) (bool, error) {
 }
 
 // loadAllDataBlock load all data blocks to cache.
-func (s *SSTable) loadAllDataBlock() error {
+func (s *Table) loadAllDataBlock() error {
 	for _, entry := range s.indexBlock.Entries {
 		if _, err := s.loadDataBlock(entry); err != nil {
 			return err
@@ -265,7 +267,7 @@ func seekRead(fs *os.File, offset int64, size uint64, whence int) ([]byte, error
 }
 
 // merge
-func (s *SSTable) Merge(tables ...*SSTable) {
+func (s *Table) Merge(tables ...*Table) {
 	if err := s.loadAllDataBlock(); err != nil {
 		panic(err)
 	}
@@ -283,7 +285,7 @@ func (s *SSTable) Merge(tables ...*SSTable) {
 }
 
 // IsOverlap
-func (t *SSTable) IsOverlap(n *SSTable) bool {
+func (t *Table) IsOverlap(n *Table) bool {
 	if bytes.Compare(t.indexBlock.FirstKey, n.indexBlock.FirstKey) <= 0 &&
 		bytes.Compare(n.indexBlock.FirstKey, t.indexBlock.LastKey) <= 0 {
 		return true
