@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"io"
 	"os"
+	"unsafe"
 
 	"github.com/xgzlucario/LSM/memdb"
 	"github.com/xgzlucario/LSM/option"
@@ -15,21 +17,18 @@ import (
 )
 
 const (
-	// indexBlockSize + crc + magicNumber
-	footerSize = 8 + 4 + 8
-
-	magicNumber = ""
+	magic = "\x4d\x89\x8c\xc4\x0a\x9c\x7a\xdb"
 )
 
 var (
-	order = binary.LittleEndian
+	order       = binary.LittleEndian
+	footerSize  = uint32(unsafe.Sizeof(Footer{}))
+	magicNumber = order.Uint64([]byte(magic))
 )
 
 var (
 	ErrKeyNotFound = errors.New("table: key not found")
-
-	ErrChecksum = errors.New("table: invalid crc checksum")
-
+	ErrChecksum    = errors.New("table: invalid crc checksum")
 	ErrMagicNumber = errors.New("table: invalid magic number")
 )
 
@@ -45,108 +44,28 @@ type Table struct {
 
 	// indexBlock is the index of dataBlocks, loaded when the table is opened.
 	indexBlock pb.IndexBlock
+
+	// footer
+	footer Footer
 }
 
 // Footer
 type Footer struct {
-	IndexBlockSize uint64
+	Level          byte
+	IndexBlockSize uint32
 	CRC            uint32
+	Id             uint64
 	MagicNumber    uint64
 }
 
-// +-----------------+
-// |  data block[0]  | <--+
-// +-----------------+    |
-// |     ... ...     |    |
-// +-----------------+    |2
-// |  data block[n]  |    |
-// +-----------------+    |
-// |                 | ---+
-// |   index block   |
-// |                 | <--+
-// +-----------------+    |1
-// |     footer      | ---+
-// +-----------------+
-// EncodeTable encode a memtable to bytes.
-func EncodeTable(m *memdb.DB, dataBlockSize uint32) []byte {
-	buf := bytes.NewBuffer(make([]byte, 0, m.Capacity()))
-	var size, length uint32
-
-	// initial.
-	dataBlock := new(pb.DataBlock)
-	indexBlock := &pb.IndexBlock{
-		FirstKey: m.FirstKey(),
-		LastKey:  m.LastKey(),
-	}
-
-	// encode data block function.
-	encodeDataBlock := func() {
-		src, _ := proto.Marshal(dataBlock)
-		dst := compress(src)
-
-		indexBlock.Entries = append(indexBlock.Entries, &pb.IndexBlockEntry{
-			LastKey: dataBlock.Keys[len(dataBlock.Keys)-1],
-			Offset:  uint32(buf.Len()),
-			Size:    uint32(len(dst)),
-			Length:  length,
-		})
-		buf.Write(dst)
-
-		dataBlock.Reset()
-		size = 0
-		length = 0
-	}
-
-	m.Iter(func(key, value []byte, meta uint16) {
-		dataBlock.Keys = append(dataBlock.Keys, key)
-		dataBlock.Values = append(dataBlock.Values, value)
-		dataBlock.Types = append(dataBlock.Types, byte(meta))
-
-		length++
-		size += uint32(len(key) + len(value) + 2)
-
-		// when reach the threshold, generate a new data block.
-		if size >= dataBlockSize {
-			encodeDataBlock()
-		}
-	})
-
-	// encode the last data block.
-	if len(dataBlock.Keys) > 0 {
-		encodeDataBlock()
-	}
-
-	// encode index block.
-	data, _ := proto.Marshal(indexBlock)
-	buf.Write(data)
-
-	// encode footer.
-	binary.Write(buf, order, Footer{
-		IndexBlockSize: uint64(len(data)),
-		CRC:            crc32.ChecksumIEEE(data),
-	})
-
-	return buf.Bytes()
-}
-
-// NewTable create a sstable with decode index.
-func NewTable(path string, opt *option.Option) (*Table, error) {
-	fd, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-
-	table := &Table{fd: fd, opt: opt}
-	if err := table.loadIndex(); err != nil {
-		return nil, err
-	}
-
-	return table, nil
+// GetId
+func (s *Table) GetId() uint64 {
+	return s.footer.Id
 }
 
 // GetLevel
-func (s *Table) GetLevel() uint32 {
-	return s.indexBlock.Level
+func (s *Table) GetLevel() int {
+	return int(s.footer.Level)
 }
 
 // GetMemDB
@@ -161,7 +80,7 @@ func (s *Table) Close() error {
 
 // loadIndex load index block.
 func (s *Table) loadIndex() error {
-	buf, err := seekRead(s.fd, -footerSize, footerSize, io.SeekEnd)
+	buf, err := seekRead(s.fd, -int64(footerSize), footerSize, io.SeekEnd)
 	if err != nil {
 		return err
 	}
@@ -170,6 +89,12 @@ func (s *Table) loadIndex() error {
 	var footer Footer
 	if err := binary.Read(bytes.NewReader(buf), order, &footer); err != nil {
 		return err
+	}
+
+	fmt.Println("load index", s.footer)
+
+	if s.footer.MagicNumber != magicNumber {
+		return ErrMagicNumber
 	}
 
 	// decode index block.
@@ -214,7 +139,7 @@ func (s *Table) loadDataBlock(entry *pb.IndexBlockEntry) (bool, error) {
 		return false, nil
 	}
 	// load and decode from disk.
-	src, err := seekRead(s.fd, int64(entry.Offset), uint64(entry.Size), io.SeekStart)
+	src, err := seekRead(s.fd, int64(entry.Offset), entry.Size, io.SeekStart)
 	if err != nil {
 		return false, err
 	}
@@ -253,7 +178,7 @@ func (s *Table) loadAllDataBlock() error {
 }
 
 // seekRead first seek(offset, whence) and then read(size).
-func seekRead(fs *os.File, offset int64, size uint64, whence int) ([]byte, error) {
+func seekRead(fs *os.File, offset int64, size uint32, whence int) ([]byte, error) {
 	if _, err := fs.Seek(offset, whence); err != nil {
 		return nil, err
 	}

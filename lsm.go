@@ -25,8 +25,8 @@ import (
 type LSM struct {
 	*option.Option
 
-	index uint64
-	dir   string
+	seq uint64
+	dir string
 
 	// RefMap have two parts:
 	// 1. Storage System (indicating what is valid data)
@@ -37,9 +37,15 @@ type LSM struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
+	// guards db and dbList.
 	mu     sync.RWMutex
 	db     *memdb.DB
 	dbList []*memdb.DB
+
+	// index of levels.
+	index *LevelController
+
+	tableWriter *table.Writer
 
 	compactC chan struct{}
 
@@ -54,14 +60,22 @@ func NewLSM(dir string, opt *option.Option) (*LSM, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	lsm := &LSM{
-		Option:   opt,
-		dir:      dir,
-		ref:      refmap.New(),
-		ctx:      ctx,
-		cancel:   cancel,
-		db:       memdb.New(opt.MemDBSize),
-		compactC: make(chan struct{}, 1),
-		logger:   slog.Default(),
+		Option:      opt,
+		dir:         dir,
+		ref:         refmap.New(),
+		ctx:         ctx,
+		cancel:      cancel,
+		db:          memdb.New(opt.MemDBSize),
+		dbList:      make([]*memdb.DB, 0, 16),
+		index:       NewLevelController(dir, opt),
+		tableWriter: table.NewWriter(opt),
+		compactC:    make(chan struct{}, 1),
+		logger:      slog.Default(),
+	}
+
+	// build index.
+	if err := lsm.index.buildFromDisk(); err != nil {
+		panic(err)
 	}
 
 	// start minor compaction.
@@ -129,15 +143,11 @@ func (lsm *LSM) Close() error {
 
 // dumpTable dump immutable memtable to sstable.
 func (lsm *LSM) dumpTable(level int, m *memdb.DB) error {
-	name := fmt.Sprintf("%06d_%s_%s-L%d.sst",
-		atomic.AddUint64(&lsm.index, 1),
-		m.FirstKey(),
-		m.LastKey(),
-		level,
-	)
-	src := table.EncodeTable(m, lsm.DataBlockSize)
+	id := atomic.AddUint64(&lsm.seq, 1)
+	src := lsm.tableWriter.Marshal(level, id, m)
 
 	// add storage ref count.
+	name := fmt.Sprintf("%06d.sst", id)
 	lsm.ref.Incr(1, name)
 
 	lsm.log("dump table %s", name)
@@ -173,11 +183,7 @@ func (lsm *LSM) splitTable(m *memdb.DB) error {
 		return lsm.dumpTable(1, db)
 	})
 
-	if err := pool.Wait(); err != nil {
-		panic(err)
-	}
-
-	return nil
+	return pool.Wait()
 }
 
 // MinorCompact
@@ -217,7 +223,7 @@ func (lsm *LSM) loadAllTables() ([]*table.Table, []string, error) {
 		// add query ref count.
 		lsm.ref.Incr(1, name)
 
-		sst, err := table.NewTable(path, lsm.Option)
+		sst, err := table.NewReader(path, lsm.Option)
 		if err != nil {
 			panic(err)
 		}
@@ -270,6 +276,11 @@ func (lsm *LSM) compactLevel() error {
 	if err := lsm.splitTable(t.GetMemDB()); err != nil {
 		panic(err)
 	}
+
+	if err := lsm.index.buildFromDisk(); err != nil {
+		panic(err)
+	}
+	lsm.index.Print()
 
 	// delete storage ref count.
 	lsm.ref.Incr(-1, names...)

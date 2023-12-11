@@ -18,6 +18,5 @@ message IndexBlockEntry {
 message IndexBlock {
     bytes firstKey = 1;
     bytes lastKey = 2;
-    uint32 level = 3;
-    repeated IndexBlockEntry entries = 4;
+    repeated IndexBlockEntry entries = 3;
 }

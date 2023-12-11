@@ -1,8 +1,12 @@
 package lsm
 
 import (
+	"bytes"
+	"cmp"
+	"fmt"
 	"io/fs"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -11,7 +15,7 @@ import (
 )
 
 const (
-	maxLevel = 6
+	maxLevel = 7
 
 	tableExt = ".sst"
 )
@@ -19,42 +23,69 @@ const (
 // LevelHandler
 type LevelHandler struct {
 	sync.RWMutex
-	opt *option.Option
 
+	level  int
 	tables []*table.Table
 }
 
-// LevelsController
-type LevelsController struct {
+// LevelController
+type LevelController struct {
 	sync.RWMutex
+
+	dir string
 	opt *option.Option
 
-	level0 *LevelHandler
 	levels [maxLevel]*LevelHandler
 }
 
 // NewLevelHandler
-func NewLevelHandler(tables []*table.Table, opt *option.Option) *LevelHandler {
+func NewLevelHandler(level int) *LevelHandler {
 	return &LevelHandler{
-		opt:    opt,
-		tables: tables,
+		tables: make([]*table.Table, 0, 8),
+		level:  level,
 	}
 }
 
 // AddTable
-func (lh *LevelHandler) AddTable(table *table.Table) {
-	lh.tables = append(lh.tables, table)
+func (lh *LevelHandler) AddTable(t *table.Table) {
+	lh.tables = append(lh.tables, t)
+
 	// level0 sorted by ID (created time), and level1+ sorted by lastKey.
+	if lh.level == 0 {
+		slices.SortFunc(lh.tables, func(a, b *table.Table) int {
+			return cmp.Compare(a.GetId(), b.GetId())
+		})
+
+	} else {
+		slices.SortFunc(lh.tables, func(a, b *table.Table) int {
+			return bytes.Compare(a.GetMemDB().LastKey(), b.GetMemDB().LastKey())
+		})
+	}
 }
 
-// NewLevelsController
-func NewLevelsController(dir string, opt *option.Option) (*LevelsController, error) {
-	ctl := &LevelsController{
+// NewLevelController
+func NewLevelController(dir string, opt *option.Option) *LevelController {
+	ctl := &LevelController{
+		dir: dir,
 		opt: opt,
+	}
+	for i := 0; i < maxLevel; i++ {
+		ctl.levels[i] = NewLevelHandler(i)
+	}
+
+	return ctl
+}
+
+// buildFromDisk
+func (ctl *LevelController) buildFromDisk() error {
+	for i := 0; i < maxLevel; i++ {
+		ctl.levels[i].Lock()
+		defer ctl.levels[i].Unlock()
+		ctl.levels[i] = NewLevelHandler(i)
 	}
 
 	// walk dir.
-	filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+	return filepath.WalkDir(ctl.dir, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			panic(err)
 		}
@@ -64,19 +95,27 @@ func NewLevelsController(dir string, opt *option.Option) (*LevelsController, err
 			return nil
 		}
 
-		table, err := table.NewTable(path, opt)
+		table, err := table.NewReader(path, ctl.opt)
 		if err != nil {
-			panic(err)
+			return err
 		}
 
-		if table.GetLevel() == 0 {
-			ctl.level0.AddTable(table)
-		} else {
-			ctl.levels[table.GetLevel()].AddTable(table)
-		}
+		ctl.levels[table.GetLevel()].AddTable(table)
 
 		return nil
 	})
+}
 
-	return ctl, nil
+// Print
+func (ctl *LevelController) Print() {
+	for i := 0; i < maxLevel; i++ {
+		ctl.levels[i].RLock()
+
+		fmt.Println("=====level", i)
+		for _, t := range ctl.levels[i].tables {
+			fmt.Println(t.GetId(), t.GetLevel(), string(t.GetMemDB().FirstKey()), string(t.GetMemDB().LastKey()))
+		}
+
+		ctl.levels[i].RUnlock()
+	}
 }
