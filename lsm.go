@@ -3,21 +3,18 @@ package lsm
 import (
 	"context"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path"
-	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/sourcegraph/conc/pool"
+	"github.com/xgzlucario/LSM/level"
 	"github.com/xgzlucario/LSM/memdb"
 	"github.com/xgzlucario/LSM/option"
-	"github.com/xgzlucario/LSM/refmap"
 	"github.com/xgzlucario/LSM/table"
 )
 
@@ -28,12 +25,6 @@ type LSM struct {
 	seq uint64
 	dir string
 
-	// RefMap have two parts:
-	// 1. Storage System (indicating what is valid data)
-	// 2. Query (referenced when querying or compaction)
-	// sstable is removed from the file system when the ref count is 0.
-	ref *refmap.Map
-
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -42,8 +33,8 @@ type LSM struct {
 	db     *memdb.DB
 	dbList []*memdb.DB
 
-	// index of levels.
-	index *LevelController
+	// index controller.
+	index *level.Controller
 
 	tableWriter *table.Writer
 
@@ -62,19 +53,18 @@ func NewLSM(dir string, opt *option.Option) (*LSM, error) {
 	lsm := &LSM{
 		Option:      opt,
 		dir:         dir,
-		ref:         refmap.New(),
 		ctx:         ctx,
 		cancel:      cancel,
 		db:          memdb.New(opt.MemDBSize),
 		dbList:      make([]*memdb.DB, 0, 16),
-		index:       NewLevelController(dir, opt),
+		index:       level.NewController(dir, opt),
 		tableWriter: table.NewWriter(opt),
 		compactC:    make(chan struct{}, 1),
 		logger:      slog.Default(),
 	}
 
 	// build index.
-	if err := lsm.index.buildFromDisk(); err != nil {
+	if err := lsm.index.BuildFromDisk(); err != nil {
 		panic(err)
 	}
 
@@ -144,11 +134,10 @@ func (lsm *LSM) Close() error {
 // dumpTable dump immutable memtable to sstable.
 func (lsm *LSM) dumpTable(level int, m *memdb.DB) error {
 	id := atomic.AddUint64(&lsm.seq, 1)
+
 	src := lsm.tableWriter.WriteTable(level, id, m)
 
-	// add storage ref count.
 	name := fmt.Sprintf("%06d.sst", id)
-	lsm.ref.Incr(1, name)
 
 	lsm.log("dump table %s", name)
 
@@ -206,87 +195,70 @@ func (lsm *LSM) MinorCompact() {
 }
 
 // loadAllTables
-func (lsm *LSM) loadAllTables() ([]*table.Table, []string, error) {
-	tables := make([]*table.Table, 0, 16)
-	names := make([]string, 0, 16)
+// func (lsm *LSM) loadAllTables() ([]*table.Table, error) {
+// 	tables := make([]*table.Table, 0, 16)
 
-	filepath.WalkDir(lsm.dir, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			panic(err)
-		}
+// 	filepath.WalkDir(lsm.dir, func(path string, entry fs.DirEntry, err error) error {
+// 		if err != nil {
+// 			panic(err)
+// 		}
 
-		name := entry.Name()
-		if !strings.HasSuffix(name, ".sst") {
-			return nil
-		}
+// 		name := entry.Name()
+// 		if !strings.HasSuffix(name, ".sst") {
+// 			return nil
+// 		}
 
-		// add query ref count.
-		lsm.ref.Incr(1, name)
+// 		sst, err := table.NewReader(path, lsm.Option)
+// 		if err != nil {
+// 			panic(err)
+// 		}
+// 		tables = append(tables, sst)
 
-		sst, err := table.NewReader(path, lsm.Option)
-		if err != nil {
-			panic(err)
-		}
-		tables = append(tables, sst)
-		names = append(names, name)
+// 		return nil
+// 	})
 
-		return nil
-	})
-
-	return tables, names, nil
-}
+// 	return tables, nil
+// }
 
 // MajorCompact
 func (lsm *LSM) MajorCompact() {
 	lsm.compactC <- struct{}{}
 	start := time.Now()
 
-	if err := lsm.compactLevel(); err != nil {
-		panic(err)
-	}
-
-	lsm.ref.DelZero(func(tableName string) {
-		if err := os.Remove(path.Join(lsm.dir, tableName)); err != nil {
-			panic(err)
-		}
-	})
+	// if err := lsm.compactLevel(); err != nil {
+	// 	panic(err)
+	// }
 
 	fmt.Println("major compact cost:", time.Since(start))
 	<-lsm.compactC
 }
 
 // compactLevel
-func (lsm *LSM) compactLevel() error {
-	tables, names, err := lsm.loadAllTables()
-	if err != nil {
-		return err
-	}
-	// delete query ref count.
-	defer lsm.ref.Incr(-1, names...)
+// func (lsm *LSM) compactLevel() error {
+// 	tables, err := lsm.loadAllTables()
+// 	if err != nil {
+// 		return err
+// 	}
+// 	if len(tables) <= 1 {
+// 		return nil
+// 	}
 
-	if len(tables) <= 1 {
-		return nil
-	}
+// 	// merge all tables.
+// 	t := tables[0]
+// 	t.Merge(tables[1:]...)
 
-	// merge all tables.
-	t := tables[0]
-	t.Merge(tables[1:]...)
+// 	// split tables.
+// 	if err := lsm.splitTable(t.GetMemDB()); err != nil {
+// 		panic(err)
+// 	}
 
-	// split tables.
-	if err := lsm.splitTable(t.GetMemDB()); err != nil {
-		panic(err)
-	}
+// 	if err := lsm.index.buildFromDisk(); err != nil {
+// 		panic(err)
+// 	}
+// 	lsm.index.Print()
 
-	if err := lsm.index.buildFromDisk(); err != nil {
-		panic(err)
-	}
-	lsm.index.Print()
-
-	// delete storage ref count.
-	lsm.ref.Incr(-1, names...)
-
-	return nil
-}
+// 	return nil
+// }
 
 func (lsm *LSM) log(msg string, args ...any) {
 	lsm.logger.Info(fmt.Sprintf(msg, args...))

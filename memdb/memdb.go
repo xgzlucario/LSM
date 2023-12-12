@@ -92,12 +92,14 @@ func (db *DB) Merge(dbs ...*DB) {
 	}
 	newdb := New(cap)
 
+	// clone self.
 	db.Iter(func(key, value []byte, vtype uint16) {
 		if err := newdb.Put(key, value, vtype); err != nil {
 			panic(err)
 		}
 	})
 
+	// merge memdbs sequentially.
 	for _, m := range dbs {
 		m.Iter(func(key, value []byte, vtype uint16) {
 			if newdb.seek(key) {

@@ -22,7 +22,7 @@ func main() {
 	// 	db.Put(k, k, nil)
 	// }
 
-	lsm, err := lsm.NewLSM("lsm", option.DefaultOption)
+	lsm, err := lsm.NewLSM("data", option.DefaultOption)
 	if err != nil {
 		panic(err)
 	}

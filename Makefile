@@ -12,5 +12,5 @@ clear:
 	rm -f coverage.*
 
 run:
-	rm -rf lsm
+	rm -rf data
 	go run example/main.go

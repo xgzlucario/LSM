@@ -7,6 +7,7 @@ import (
 	"hash/crc32"
 	"io"
 	"os"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/xgzlucario/LSM/memdb"
@@ -35,6 +36,9 @@ var (
 type Table struct {
 	fd  *os.File
 	opt *option.Option
+
+	// ref is the reference count of the table.
+	ref atomic.Int32
 
 	// MemTable is the container for data in memory.
 	// When lookup a table, the data from the corresponding dataBlock on disk is first
@@ -82,9 +86,28 @@ func (s *Table) GetMemDB() *memdb.DB {
 	return s.m
 }
 
+// GetFileSize
+func (s *Table) GetFileSize() int64 {
+	stat, _ := s.fd.Stat()
+	return stat.Size()
+}
+
 // Close
 func (s *Table) Close() error {
 	return s.fd.Close()
+}
+
+// AddRef
+func (s *Table) AddRef() {
+	s.ref.Add(1)
+}
+
+// DelRef
+func (s *Table) DelRef() {
+	if s.ref.Add(-1) == 0 {
+		os.Remove(s.fd.Name())
+		s.fd.Close()
+	}
 }
 
 // loadIndex load index block.
