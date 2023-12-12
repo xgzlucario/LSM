@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"hash/crc32"
 	"io"
 	"os"
@@ -22,7 +21,7 @@ const (
 
 var (
 	order       = binary.LittleEndian
-	footerSize  = uint32(unsafe.Sizeof(Footer{}))
+	footerSize  = uint64(unsafe.Sizeof(Footer{}))
 	magicNumber = order.Uint64([]byte(magic))
 )
 
@@ -51,9 +50,9 @@ type Table struct {
 
 // Footer
 type Footer struct {
-	Level          byte
-	IndexBlockSize uint32
+	Level          uint32
 	CRC            uint32
+	IndexBlockSize uint64
 	Id             uint64
 	MagicNumber    uint64
 }
@@ -66,6 +65,16 @@ func (s *Table) GetId() uint64 {
 // GetLevel
 func (s *Table) GetLevel() int {
 	return int(s.footer.Level)
+}
+
+// GetFirstKey
+func (s *Table) GetFirstKey() []byte {
+	return s.indexBlock.FirstKey
+}
+
+// GetLastKey
+func (s *Table) GetLastKey() []byte {
+	return s.indexBlock.LastKey
 }
 
 // GetMemDB
@@ -86,23 +95,19 @@ func (s *Table) loadIndex() error {
 	}
 
 	// decode footer.
-	var footer Footer
-	if err := binary.Read(bytes.NewReader(buf), order, &footer); err != nil {
+	if err := binary.Read(bytes.NewReader(buf), order, &s.footer); err != nil {
 		return err
 	}
-
-	fmt.Println("load index", s.footer)
-
 	if s.footer.MagicNumber != magicNumber {
 		return ErrMagicNumber
 	}
 
 	// decode index block.
-	buf, err = seekRead(s.fd, -int64(footer.IndexBlockSize+footerSize), footer.IndexBlockSize, io.SeekEnd)
+	buf, err = seekRead(s.fd, -int64(s.footer.IndexBlockSize+footerSize), s.footer.IndexBlockSize, io.SeekEnd)
 	if err != nil {
 		return err
 	}
-	if crc32.ChecksumIEEE(buf) != footer.CRC {
+	if crc32.ChecksumIEEE(buf) != s.footer.CRC {
 		return ErrChecksum
 	}
 
@@ -139,7 +144,7 @@ func (s *Table) loadDataBlock(entry *pb.IndexBlockEntry) (bool, error) {
 		return false, nil
 	}
 	// load and decode from disk.
-	src, err := seekRead(s.fd, int64(entry.Offset), entry.Size, io.SeekStart)
+	src, err := seekRead(s.fd, int64(entry.Offset), uint64(entry.Size), io.SeekStart)
 	if err != nil {
 		return false, err
 	}
@@ -178,11 +183,11 @@ func (s *Table) loadAllDataBlock() error {
 }
 
 // seekRead first seek(offset, whence) and then read(size).
-func seekRead(fs *os.File, offset int64, size uint32, whence int) ([]byte, error) {
+func seekRead(fs *os.File, offset int64, size uint64, whence int) ([]byte, error) {
 	if _, err := fs.Seek(offset, whence); err != nil {
 		return nil, err
 	}
-
+	// TODO use buffer pool.
 	buf := make([]byte, size)
 	if _, err := fs.Read(buf); err != nil {
 		return nil, err

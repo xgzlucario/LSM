@@ -144,7 +144,7 @@ func (lsm *LSM) Close() error {
 // dumpTable dump immutable memtable to sstable.
 func (lsm *LSM) dumpTable(level int, m *memdb.DB) error {
 	id := atomic.AddUint64(&lsm.seq, 1)
-	src := lsm.tableWriter.Marshal(level, id, m)
+	src := lsm.tableWriter.WriteTable(level, id, m)
 
 	// add storage ref count.
 	name := fmt.Sprintf("%06d.sst", id)

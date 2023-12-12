@@ -41,13 +41,14 @@ type LevelController struct {
 // NewLevelHandler
 func NewLevelHandler(level int) *LevelHandler {
 	return &LevelHandler{
-		tables: make([]*table.Table, 0, 8),
 		level:  level,
+		tables: make([]*table.Table, 0, 8),
 	}
 }
 
 // AddTable
 func (lh *LevelHandler) AddTable(t *table.Table) {
+	lh.Lock()
 	lh.tables = append(lh.tables, t)
 
 	// level0 sorted by ID (created time), and level1+ sorted by lastKey.
@@ -58,9 +59,10 @@ func (lh *LevelHandler) AddTable(t *table.Table) {
 
 	} else {
 		slices.SortFunc(lh.tables, func(a, b *table.Table) int {
-			return bytes.Compare(a.GetMemDB().LastKey(), b.GetMemDB().LastKey())
+			return bytes.Compare(a.GetLastKey(), b.GetLastKey())
 		})
 	}
+	lh.Unlock()
 }
 
 // NewLevelController
@@ -99,7 +101,6 @@ func (ctl *LevelController) buildFromDisk() error {
 		if err != nil {
 			return err
 		}
-
 		ctl.levels[table.GetLevel()].AddTable(table)
 
 		return nil
@@ -113,7 +114,11 @@ func (ctl *LevelController) Print() {
 
 		fmt.Println("=====level", i)
 		for _, t := range ctl.levels[i].tables {
-			fmt.Println(t.GetId(), t.GetLevel(), string(t.GetMemDB().FirstKey()), string(t.GetMemDB().LastKey()))
+			fmt.Println(
+				"id:", t.GetId(),
+				"level:", t.GetLevel(),
+				"first:", string(t.GetFirstKey()),
+				"last:", string(t.GetLastKey()))
 		}
 
 		ctl.levels[i].RUnlock()

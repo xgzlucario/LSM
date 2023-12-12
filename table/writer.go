@@ -21,8 +21,8 @@ func NewWriter(opt *option.Option) *Writer {
 	return &Writer{opt}
 }
 
-// Marshal
-func (w *Writer) Marshal(level int, id uint64, db *memdb.DB) []byte {
+// WriteTable
+func (w *Writer) WriteTable(level int, id uint64, db *memdb.DB) []byte {
 	buf := bytes.NewBuffer(make([]byte, 0, db.Capacity()))
 	var size, length uint32
 
@@ -76,9 +76,9 @@ func (w *Writer) Marshal(level int, id uint64, db *memdb.DB) []byte {
 
 	// encode footer.
 	binary.Write(buf, order, Footer{
-		Level:          byte(level),
-		IndexBlockSize: uint32(len(data)),
+		Level:          uint32(level),
 		CRC:            crc32.ChecksumIEEE(data),
+		IndexBlockSize: uint64(len(data)),
 		Id:             id,
 		MagicNumber:    magicNumber,
 	})
