@@ -115,19 +115,19 @@ func Merge(dbs ...*DB) *DB {
 	return db
 }
 
-// Split
+// SplitFunc
 func (db *DB) SplitFunc(eachNewDBSize uint32, cb func(*DB) error) error {
 	pool := pool.New().WithErrors()
 	newdb := New(eachNewDBSize)
 
 	db.Iter(func(key, value []byte, meta uint16) {
-		if full, err := db.PutIsFull(key, value, meta); full {
+		if full, err := newdb.PutIsFull(key, value, meta); full {
 			// dump table.
 			pool.Go(func() error { return cb(newdb) })
 
 			// create new memdb.
 			newdb = New(eachNewDBSize)
-			if err := db.Put(key, value, meta); err != nil {
+			if err := newdb.Put(key, value, meta); err != nil {
 				panic(err)
 			}
 

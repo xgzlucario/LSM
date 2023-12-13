@@ -248,3 +248,8 @@ func (t *Table) IsOverlap(target *Table) bool {
 	return bcmp.Between(t.GetMinKey(), target.GetMinKey(), t.GetMaxKey()) ||
 		bcmp.Between(t.GetMinKey(), target.GetMaxKey(), t.GetMaxKey())
 }
+
+// ClearCache
+func (t *Table) ClearCache() {
+	t.m = nil
+}

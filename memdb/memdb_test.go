@@ -33,10 +33,10 @@ func getMemDB(start, end int) *DB {
 
 func checkData(m *DB, start, end int, assert *assert.Assertions) {
 	// check minKey and maxKey.
-	minKey := []byte(fmt.Sprintf("%08d", start))
-	maxKey := []byte(fmt.Sprintf("%08d", end-1))
-	assert.Equal(minKey, m.MinKey())
-	assert.Equal(maxKey, m.MaxKey())
+	minKey := fmt.Sprintf("%08d", start)
+	maxKey := fmt.Sprintf("%08d", end-1)
+	assert.Equal(minKey, string(m.MinKey()))
+	assert.Equal(maxKey, string(m.MaxKey()))
 
 	// check 0-start.
 	for i := 0; i < start; i++ {

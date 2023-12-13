@@ -3,8 +3,6 @@ package level
 import (
 	"fmt"
 	"io/fs"
-	"os"
-	"path"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -21,18 +19,20 @@ const (
 
 // Controller is a levels controller in lsm-tree.
 type Controller struct {
-	mu       sync.RWMutex
-	tid      uint64
-	dir      string
-	opt      *option.Option
-	handlers [maxLevel]*handler
+	mu          sync.RWMutex
+	tid         atomic.Uint64
+	dir         string
+	opt         *option.Option
+	handlers    [maxLevel]*handler
+	tableWriter *table.Writer
 }
 
 // NewController
 func NewController(dir string, opt *option.Option) *Controller {
 	c := &Controller{
-		dir: dir,
-		opt: opt,
+		dir:         dir,
+		opt:         opt,
+		tableWriter: table.NewWriter(opt),
 	}
 	for i := range c.handlers {
 		c.handlers[i] = &handler{
@@ -48,10 +48,10 @@ func (c *Controller) BuildFromDisk() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for _, h := range c.handlers {
-		h.Lock()
-		defer h.Unlock()
-		h.tables = h.tables[:0]
+	for _, handler := range c.handlers {
+		handler.Lock()
+		defer handler.Unlock()
+		handler.tables = handler.tables[:0]
 	}
 
 	// walk dir.
@@ -77,8 +77,8 @@ func (c *Controller) BuildFromDisk() error {
 
 	fmt.Println("controller: build from disk.")
 
-	for _, h := range c.handlers {
-		h.sortTables()
+	for _, handler := range c.handlers {
+		handler.sortTables()
 	}
 	c.Print()
 
@@ -87,17 +87,9 @@ func (c *Controller) BuildFromDisk() error {
 
 // Print
 func (c *Controller) Print() {
-	for _, h := range c.handlers {
-		fmt.Println(h.tables)
+	for _, handler := range c.handlers {
+		fmt.Println(handler.tables)
 	}
-}
-
-// AddTable
-func (c *Controller) AddTable(level int, table *table.Table) {
-	h := c.handlers[level]
-	h.Lock()
-	h.addTables(table)
-	h.Unlock()
 }
 
 // Compact
@@ -105,33 +97,52 @@ func (c *Controller) Compact() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for _, h := range c.handlers {
-		if len(h.tables) == 0 {
+	for _, handler := range c.handlers {
+		handler.Lock()
+
+		if len(handler.tables) == 0 {
+			handler.Unlock()
 			continue
 		}
 
-		tables, truncateTables := h.truncateOverlapTables()
-		fmt.Println(tables)
-		fmt.Println(truncateTables)
+		tables, truncateTables := handler.truncateOverlapTables()
+		handler.tables = tables
 
 		db := table.MergeTables(truncateTables...)
 
-		// split dbs.
-		db.SplitFunc(c.opt.MemDBSize, func(db *memdb.DB) error {
-			return c.DumpTable(h.level, db)
+		// split merged memdb.
+		toLevel := handler.level
+		if handler.level == 0 {
+			toLevel = 1
+		}
+
+		err := db.SplitFunc(c.opt.MemDBSize, func(db *memdb.DB) error {
+			table, err := c.tableWriter.WriteTable(toLevel, c.tid.Add(1), db)
+			if err != nil {
+				return err
+			}
+			c.handlers[toLevel].addTables(table)
+			return nil
 		})
+		if err != nil {
+			panic(err)
+		}
+
+		// delete truncate tables.
+		handler.delTables(truncateTables...)
+
+		handler.Unlock()
 	}
 
-	return c.BuildFromDisk()
+	return nil
 }
 
-// dumpTable
-func (c *Controller) DumpTable(level int, db *memdb.DB) error {
-	id := atomic.AddUint64(&c.tid, 1)
-
-	name := fmt.Sprintf("%06d.sst", id)
-	fileName := path.Join(c.dir, name)
-
-	src := table.NewWriter(c.opt).WriteTable(level, id, db)
-	return os.WriteFile(fileName, src, 0644)
+// AddLevel0Table
+func (c *Controller) AddLevel0Table(db *memdb.DB) error {
+	table, err := c.tableWriter.WriteTable(0, c.tid.Add(1), db)
+	if err != nil {
+		return err
+	}
+	c.handlers[0].addTables(table)
+	return nil
 }

@@ -129,13 +129,11 @@ func (lsm *LSM) MinorCompact() {
 	lsm.mu.Unlock()
 
 	for _, db := range list {
-		if err := lsm.index.DumpTable(0, db); err != nil {
+		if err := lsm.index.AddLevel0Table(db); err != nil {
 			panic(err)
 		}
 	}
-	if err := lsm.index.BuildFromDisk(); err != nil {
-		panic(err)
-	}
+	lsm.index.Print()
 
 	<-lsm.compactC
 }

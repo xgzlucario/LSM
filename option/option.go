@@ -9,6 +9,8 @@ const (
 
 // Option for LSM-Tree.
 type Option struct {
+	Path string
+
 	MemDBSize     uint32
 	DataBlockSize uint32
 
@@ -18,6 +20,7 @@ type Option struct {
 
 // DefaultOption
 var DefaultOption = &Option{
+	Path:                 "data",
 	MemDBSize:            4 * MB,
 	DataBlockSize:        4 * KB,
 	MinorCompactInterval: time.Second,

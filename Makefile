@@ -3,7 +3,7 @@ gen-proto:
 
 test-cover:
 	go test -race \
-	-coverpkg=./... ./memdb ./refmap ./table \
+	-coverpkg=./... ./memdb ./table \
 	-coverprofile=coverage.txt -covermode=atomic
 	go tool cover -html=coverage.txt -o coverage.html
 

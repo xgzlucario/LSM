@@ -3,7 +3,10 @@ package table
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"hash/crc32"
+	"os"
+	"path"
 
 	"github.com/xgzlucario/LSM/memdb"
 	"github.com/xgzlucario/LSM/option"
@@ -22,7 +25,28 @@ func NewWriter(opt *option.Option) *Writer {
 }
 
 // WriteTable
-func (w *Writer) WriteTable(level int, id uint64, db *memdb.DB) []byte {
+func (w *Writer) WriteTable(level int, id uint64, db *memdb.DB) (*Table, error) {
+	data := w.encodeTable(level, id, db)
+
+	// write to disk.
+	name := fmt.Sprintf("%08d.sst", id)
+	path := path.Join(w.opt.Path, name)
+
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return nil, err
+	}
+
+	// create reader from file.
+	table, err := NewReader(path, w.opt)
+	if err != nil {
+		return nil, err
+	}
+
+	return table, nil
+}
+
+// encodeTable
+func (w *Writer) encodeTable(level int, id uint64, db *memdb.DB) []byte {
 	buf := bytes.NewBuffer(make([]byte, 0, db.Capacity()))
 	var size, length uint32
 
