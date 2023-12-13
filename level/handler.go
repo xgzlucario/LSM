@@ -45,21 +45,13 @@ func (h *handler) sortTables() {
 		})
 	} else {
 		slices.SortFunc(h.tables, func(a, b *table.Table) int {
-			return bytes.Compare(a.GetMaxKey(), b.GetMaxKey())
+			return bytes.Compare(a.GetMinKey(), b.GetMinKey())
 		})
 	}
 }
 
 // truncateOverlapTables
 func (h *handler) truncateOverlapTables() (newTables, overlapTables []*table.Table) {
-	// compact all in level0.
-	if h.level == 0 {
-		return nil, h.tables
-	}
-	if len(h.tables) <= 1 {
-		return h.tables, nil
-	}
-
 	newTables = make([]*table.Table, 0, maxCompactTableLength)
 	overlapTables = make([]*table.Table, 0, maxCompactTableLength)
 
@@ -68,6 +60,7 @@ func (h *handler) truncateOverlapTables() (newTables, overlapTables []*table.Tab
 		h.tables[0].GetMinKey(),
 		h.tables[0].GetMaxKey(),
 	}
+	overlapTables = append(overlapTables, h.tables[0])
 
 	for _, table := range h.tables[1:] {
 		minKey, maxKey := table.GetMinKey(), table.GetMaxKey()

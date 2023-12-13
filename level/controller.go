@@ -97,6 +97,10 @@ func (c *Controller) Compact() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	var tables, truncateTables []*table.Table
+	var toLevel int
+
+	// compact each level.
 	for _, handler := range c.handlers {
 		handler.Lock()
 
@@ -104,18 +108,27 @@ func (c *Controller) Compact() error {
 			handler.Unlock()
 			continue
 		}
+		handler.sortTables()
 
-		tables, truncateTables := handler.truncateOverlapTables()
-		handler.tables = tables
+		// truncate tables.
+		if handler.level == 0 {
+			truncateTables = handler.tables
+			handler.tables = handler.tables[:0]
+			toLevel = 1
+
+		} else {
+			tables, truncateTables = handler.truncateOverlapTables()
+			if len(truncateTables) <= 1 {
+				handler.Unlock()
+				continue
+			}
+			handler.tables = tables
+			toLevel = handler.level
+		}
 
 		db := table.MergeTables(truncateTables...)
 
 		// split merged memdb.
-		toLevel := handler.level
-		if handler.level == 0 {
-			toLevel = 1
-		}
-
 		err := db.SplitFunc(c.opt.MemDBSize, func(db *memdb.DB) error {
 			table, err := c.tableWriter.WriteTable(toLevel, c.tid.Add(1), db)
 			if err != nil {
@@ -130,6 +143,7 @@ func (c *Controller) Compact() error {
 
 		// delete truncate tables.
 		handler.delTables(truncateTables...)
+		handler.sortTables()
 
 		handler.Unlock()
 	}
