@@ -13,12 +13,12 @@ import (
 
 // Writer
 type Writer struct {
-	*option.Option
+	opt *option.Option
 }
 
 // NewWriter
 func NewWriter(opt *option.Option) *Writer {
-	return &Writer{opt}
+	return &Writer{opt: opt}
 }
 
 // WriteTable
@@ -29,8 +29,8 @@ func (w *Writer) WriteTable(level int, id uint64, db *memdb.DB) []byte {
 	// initial.
 	dataBlock := new(pb.DataBlock)
 	indexBlock := &pb.IndexBlock{
-		FirstKey: db.FirstKey(),
-		LastKey:  db.LastKey(),
+		MinKey: db.MinKey(),
+		MaxKey: db.MaxKey(),
 	}
 
 	// encode data block function.
@@ -39,10 +39,10 @@ func (w *Writer) WriteTable(level int, id uint64, db *memdb.DB) []byte {
 		dst := compress(src)
 
 		indexBlock.Entries = append(indexBlock.Entries, &pb.IndexBlockEntry{
-			LastKey: dataBlock.Keys[len(dataBlock.Keys)-1],
-			Offset:  uint32(buf.Len()),
-			Size:    uint32(len(dst)),
-			Length:  length,
+			MaxKey: dataBlock.Keys[len(dataBlock.Keys)-1],
+			Offset: uint32(buf.Len()),
+			Size:   uint32(len(dst)),
+			Length: length,
 		})
 		buf.Write(dst)
 
@@ -60,7 +60,7 @@ func (w *Writer) WriteTable(level int, id uint64, db *memdb.DB) []byte {
 		size += uint32(len(key) + len(value) + 2)
 
 		// when reach the threshold, generate a new data block.
-		if size >= w.DataBlockSize {
+		if size >= w.opt.DataBlockSize {
 			encodeDataBlock()
 		}
 	})

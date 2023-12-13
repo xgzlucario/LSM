@@ -3,15 +3,11 @@ package lsm
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
-	"path"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"time"
 
-	"github.com/sourcegraph/conc/pool"
 	"github.com/xgzlucario/LSM/level"
 	"github.com/xgzlucario/LSM/memdb"
 	"github.com/xgzlucario/LSM/option"
@@ -22,7 +18,6 @@ import (
 type LSM struct {
 	*option.Option
 
-	seq uint64
 	dir string
 
 	ctx    context.Context
@@ -39,8 +34,6 @@ type LSM struct {
 	tableWriter *table.Writer
 
 	compactC chan struct{}
-
-	logger *slog.Logger
 }
 
 // NewLSM
@@ -60,7 +53,6 @@ func NewLSM(dir string, opt *option.Option) (*LSM, error) {
 		index:       level.NewController(dir, opt),
 		tableWriter: table.NewWriter(opt),
 		compactC:    make(chan struct{}, 1),
-		logger:      slog.Default(),
 	}
 
 	// build index.
@@ -94,7 +86,7 @@ func NewLSM(dir string, opt *option.Option) (*LSM, error) {
 		}
 	}()
 
-	lsm.logger.Info("LSM-Tree started.")
+	fmt.Println("LSM-Tree started.")
 
 	return lsm, nil
 }
@@ -115,11 +107,6 @@ func (lsm *LSM) Put(key, value []byte) error {
 	return err
 }
 
-// Get
-func (lsm *LSM) Get(key []byte) ([]byte, error) {
-	return nil, nil
-}
-
 // Close
 func (lsm *LSM) Close() error {
 	select {
@@ -129,50 +116,6 @@ func (lsm *LSM) Close() error {
 		lsm.cancel()
 	}
 	return nil
-}
-
-// dumpTable dump immutable memtable to sstable.
-func (lsm *LSM) dumpTable(level int, m *memdb.DB) error {
-	id := atomic.AddUint64(&lsm.seq, 1)
-
-	src := lsm.tableWriter.WriteTable(level, id, m)
-
-	name := fmt.Sprintf("%06d.sst", id)
-
-	lsm.log("dump table %s", name)
-
-	return os.WriteFile(path.Join(lsm.dir, name), src, 0644)
-}
-
-// splitTable
-func (lsm *LSM) splitTable(m *memdb.DB) error {
-	pool := pool.New().WithErrors()
-	db := memdb.New(lsm.MemDBSize)
-
-	m.Iter(func(key, value []byte, meta uint16) {
-		if full, err := db.PutIsFull(key, value, meta); full {
-			// dump table.
-			pool.Go(func() error {
-				return lsm.dumpTable(1, db)
-			})
-
-			// create new memdb.
-			db = memdb.New(lsm.MemDBSize)
-			if err := db.Put(key, value, meta); err != nil {
-				panic(err)
-			}
-
-		} else if err != nil {
-			panic(err)
-		}
-	})
-
-	// dump last table.
-	pool.Go(func() error {
-		return lsm.dumpTable(1, db)
-	})
-
-	return pool.Wait()
 }
 
 // MinorCompact
@@ -185,81 +128,27 @@ func (lsm *LSM) MinorCompact() {
 	lsm.dbList = lsm.dbList[:0]
 	lsm.mu.Unlock()
 
-	for _, m := range list {
-		if err := lsm.dumpTable(0, m); err != nil {
+	for _, db := range list {
+		if err := lsm.index.DumpTable(0, db); err != nil {
 			panic(err)
 		}
+	}
+	if err := lsm.index.BuildFromDisk(); err != nil {
+		panic(err)
 	}
 
 	<-lsm.compactC
 }
-
-// loadAllTables
-// func (lsm *LSM) loadAllTables() ([]*table.Table, error) {
-// 	tables := make([]*table.Table, 0, 16)
-
-// 	filepath.WalkDir(lsm.dir, func(path string, entry fs.DirEntry, err error) error {
-// 		if err != nil {
-// 			panic(err)
-// 		}
-
-// 		name := entry.Name()
-// 		if !strings.HasSuffix(name, ".sst") {
-// 			return nil
-// 		}
-
-// 		sst, err := table.NewReader(path, lsm.Option)
-// 		if err != nil {
-// 			panic(err)
-// 		}
-// 		tables = append(tables, sst)
-
-// 		return nil
-// 	})
-
-// 	return tables, nil
-// }
 
 // MajorCompact
 func (lsm *LSM) MajorCompact() {
 	lsm.compactC <- struct{}{}
 	start := time.Now()
 
-	// if err := lsm.compactLevel(); err != nil {
-	// 	panic(err)
-	// }
+	if err := lsm.index.Compact(); err != nil {
+		panic(err)
+	}
 
 	fmt.Println("major compact cost:", time.Since(start))
 	<-lsm.compactC
-}
-
-// compactLevel
-// func (lsm *LSM) compactLevel() error {
-// 	tables, err := lsm.loadAllTables()
-// 	if err != nil {
-// 		return err
-// 	}
-// 	if len(tables) <= 1 {
-// 		return nil
-// 	}
-
-// 	// merge all tables.
-// 	t := tables[0]
-// 	t.Merge(tables[1:]...)
-
-// 	// split tables.
-// 	if err := lsm.splitTable(t.GetMemDB()); err != nil {
-// 		panic(err)
-// 	}
-
-// 	if err := lsm.index.buildFromDisk(); err != nil {
-// 		panic(err)
-// 	}
-// 	lsm.index.Print()
-
-// 	return nil
-// }
-
-func (lsm *LSM) log(msg string, args ...any) {
-	lsm.logger.Info(fmt.Sprintf(msg, args...))
 }

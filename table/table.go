@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"io"
 	"os"
 	"sync/atomic"
 	"unsafe"
 
+	"github.com/xgzlucario/LSM/bcmp"
 	"github.com/xgzlucario/LSM/memdb"
 	"github.com/xgzlucario/LSM/option"
 	"github.com/xgzlucario/LSM/pb"
@@ -34,6 +36,7 @@ var (
 
 // Table
 type Table struct {
+	// TODO: use mmap file instead of fileDesc
 	fd  *os.File
 	opt *option.Option
 
@@ -61,24 +64,30 @@ type Footer struct {
 	MagicNumber    uint64
 }
 
-// GetId
-func (s *Table) GetId() uint64 {
+// String
+func (t *Table) String() string {
+	return fmt.Sprintf("[table] id:%v, level:%v, min:%s, max:%s\n",
+		t.ID(), t.Level(), t.GetMinKey(), t.GetMaxKey())
+}
+
+// ID
+func (s *Table) ID() uint64 {
 	return s.footer.Id
 }
 
-// GetLevel
-func (s *Table) GetLevel() int {
+// Level
+func (s *Table) Level() int {
 	return int(s.footer.Level)
 }
 
-// GetFirstKey
-func (s *Table) GetFirstKey() []byte {
-	return s.indexBlock.FirstKey
+// GetMinKey
+func (s *Table) GetMinKey() []byte {
+	return s.indexBlock.MinKey
 }
 
-// GetLastKey
-func (s *Table) GetLastKey() []byte {
-	return s.indexBlock.LastKey
+// GetMaxKey
+func (s *Table) GetMaxKey() []byte {
+	return s.indexBlock.MaxKey
 }
 
 // GetMemDB
@@ -141,7 +150,7 @@ func (s *Table) loadIndex() error {
 // cached indicates whether the data hit the cache.
 func (s *Table) FindKey(key []byte) (res []byte, cached bool, err error) {
 	for _, entry := range s.indexBlock.Entries {
-		if bytes.Compare(key, entry.LastKey) <= 0 {
+		if bcmp.LessEqual(key, entry.MaxKey) {
 			// load cache.
 			if ok, err := s.loadDataBlock(entry); err != nil {
 				return nil, false, err
@@ -219,31 +228,23 @@ func seekRead(fs *os.File, offset int64, size uint64, whence int) ([]byte, error
 	return buf, nil
 }
 
-// merge
-func (s *Table) Merge(tables ...*Table) {
-	if err := s.loadAllDataBlock(); err != nil {
-		panic(err)
-	}
+// MergeTables
+func MergeTables(tables ...*Table) *memdb.DB {
 	for _, t := range tables {
 		if err := t.loadAllDataBlock(); err != nil {
 			panic(err)
 		}
 	}
-
 	db := make([]*memdb.DB, 0, len(tables))
 	for _, t := range tables {
 		db = append(db, t.m)
 	}
-	s.m.Merge(db...)
+
+	return memdb.Merge(db...)
 }
 
 // IsOverlap
-func (t *Table) IsOverlap(n *Table) bool {
-	if bytes.Compare(t.indexBlock.FirstKey, n.indexBlock.FirstKey) <= 0 &&
-		bytes.Compare(n.indexBlock.FirstKey, t.indexBlock.LastKey) <= 0 {
-		return true
-	}
-
-	return bytes.Compare(n.indexBlock.FirstKey, t.indexBlock.FirstKey) <= 0 &&
-		bytes.Compare(t.indexBlock.FirstKey, n.indexBlock.LastKey) <= 0
+func (t *Table) IsOverlap(target *Table) bool {
+	return bcmp.Between(t.GetMinKey(), target.GetMinKey(), t.GetMaxKey()) ||
+		bcmp.Between(t.GetMinKey(), target.GetMaxKey(), t.GetMaxKey())
 }

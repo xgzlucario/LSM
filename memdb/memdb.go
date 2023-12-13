@@ -2,8 +2,10 @@ package memdb
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/andy-kimball/arenaskl"
+	"github.com/sourcegraph/conc/pool"
 )
 
 const (
@@ -32,6 +34,12 @@ func New(cap uint32) *DB {
 	return &DB{cap: cap, skl: skl, it: &it}
 }
 
+// String
+func (db *DB) String() string {
+	return fmt.Sprintf("[memdb] cap:%v, min:%s, max:%s\n",
+		db.cap, db.MinKey(), db.MaxKey())
+}
+
 // Get
 func (db *DB) Get(key []byte) ([]byte, bool) {
 	if db.seek(key) {
@@ -56,23 +64,20 @@ func (db *DB) PutIsFull(key, value []byte, vtype uint16) (bool, error) {
 	return errors.Is(err, arenaskl.ErrArenaFull), err
 }
 
-// FirstKey
-func (db *DB) FirstKey() []byte {
+// MinKey
+func (db *DB) MinKey() []byte {
 	db.it.SeekToFirst()
 	return db.it.Key()
 }
 
-// LastKey
-func (db *DB) LastKey() []byte {
+// MaxKey
+func (db *DB) MaxKey() []byte {
 	db.it.SeekToLast()
 	return db.it.Key()
 }
 
 // Iter
 func (db *DB) Iter(f func([]byte, []byte, uint16)) {
-	if db == nil {
-		panic("memdb/Iter: nil db")
-	}
 	for db.it.SeekToFirst(); db.it.Valid(); db.it.Next() {
 		f(db.it.Key(), db.it.Value(), db.it.Meta())
 	}
@@ -85,34 +90,54 @@ func (db *DB) seek(key []byte) bool {
 }
 
 // Merge
-func (db *DB) Merge(dbs ...*DB) {
-	cap := db.cap
+func Merge(dbs ...*DB) *DB {
+	var cap uint32
 	for _, m := range dbs {
 		cap += m.cap
 	}
-	newdb := New(cap)
-
-	// clone self.
-	db.Iter(func(key, value []byte, vtype uint16) {
-		if err := newdb.Put(key, value, vtype); err != nil {
-			panic(err)
-		}
-	})
+	db := New(cap)
 
 	// merge memdbs sequentially.
 	for _, m := range dbs {
 		m.Iter(func(key, value []byte, vtype uint16) {
-			if newdb.seek(key) {
-				if err := newdb.it.Set(value, vtype); err != nil {
+			if db.seek(key) {
+				if err := db.it.Set(value, vtype); err != nil {
 					panic(err)
 				}
 			} else {
-				if err := newdb.Put(key, value, vtype); err != nil {
+				if err := db.Put(key, value, vtype); err != nil {
 					panic(err)
 				}
 			}
 		})
 	}
 
-	*db = *newdb
+	return db
+}
+
+// Split
+func (db *DB) SplitFunc(eachNewDBSize uint32, cb func(*DB) error) error {
+	pool := pool.New().WithErrors()
+	newdb := New(eachNewDBSize)
+
+	db.Iter(func(key, value []byte, meta uint16) {
+		if full, err := db.PutIsFull(key, value, meta); full {
+			// dump table.
+			pool.Go(func() error { return cb(newdb) })
+
+			// create new memdb.
+			newdb = New(eachNewDBSize)
+			if err := db.Put(key, value, meta); err != nil {
+				panic(err)
+			}
+
+		} else if err != nil {
+			panic(err)
+		}
+	})
+
+	// dump last table.
+	pool.Go(func() error { return cb(newdb) })
+
+	return pool.Wait()
 }

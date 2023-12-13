@@ -32,11 +32,11 @@ func getMemDB(start, end int) *DB {
 }
 
 func checkData(m *DB, start, end int, assert *assert.Assertions) {
-	// check firstKey and lastKey.
-	firstKey := []byte(fmt.Sprintf("%08d", start))
-	lastKey := []byte(fmt.Sprintf("%08d", end-1))
-	assert.Equal(firstKey, m.FirstKey())
-	assert.Equal(lastKey, m.LastKey())
+	// check minKey and maxKey.
+	minKey := []byte(fmt.Sprintf("%08d", start))
+	maxKey := []byte(fmt.Sprintf("%08d", end-1))
+	assert.Equal(minKey, m.MinKey())
+	assert.Equal(maxKey, m.MaxKey())
 
 	// check 0-start.
 	for i := 0; i < start; i++ {
@@ -113,7 +113,7 @@ func TestMerge(t *testing.T) {
 	{
 		m1 := getMemDB(0, 10000)
 		m2 := getMemDB(10000, 20000)
-		m1.Merge(m2)
+		m1 = Merge(m1, m2)
 		// check cap.
 		assert.Equal(uint32(testMemDBSize*2), m1.Capacity())
 		// check data.
@@ -122,7 +122,7 @@ func TestMerge(t *testing.T) {
 	{
 		m1 := getMemDB(0, 15000)
 		m2 := getMemDB(10000, 20000)
-		m1.Merge(m2)
+		m1 = Merge(m1, m2)
 		// check cap.
 		assert.Equal(uint32(testMemDBSize*2), m1.Capacity())
 		// check data.

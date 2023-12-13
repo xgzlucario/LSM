@@ -6,54 +6,81 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/xgzlucario/LSM/bcmp"
 	"github.com/xgzlucario/LSM/table"
 )
 
-// Handler is a lsm-tree level handler.
-type Handler struct {
+// handler is a lsm-tree level handler.
+type handler struct {
+	// locker needs to be controlled manually from the outside.
 	sync.RWMutex
 	level  int
 	size   int64
 	tables []*table.Table
 }
 
-// addTable
-func (h *Handler) addTable(t *table.Table) {
-	h.size += t.GetFileSize()
-	t.AddRef()
-	h.tables = append(h.tables, t)
+// addTables
+func (h *handler) addTables(tables ...*table.Table) {
+	for _, t := range tables {
+		h.size += t.GetFileSize()
+		t.AddRef()
+	}
+	h.tables = append(h.tables, tables...)
 }
 
-// delTable
-func (h *Handler) delTable(t *table.Table) {
-	h.size -= t.GetFileSize()
-	t.DelRef()
+// delTables
+func (h *handler) delTables(tables ...*table.Table) {
+	for _, t := range tables {
+		h.size -= t.GetFileSize()
+		t.DelRef()
+	}
 }
 
 // sortTables
-func (h *Handler) sortTables() {
-	// level0 sorted by ID (created time), and level1+ sorted by lastKey.
+func (h *handler) sortTables() {
+	// level0 sorted by ID (created time), and level1+ sorted by maxKey.
 	if h.level == 0 {
 		slices.SortFunc(h.tables, func(a, b *table.Table) int {
-			return cmp.Compare(a.GetId(), b.GetId())
+			return cmp.Compare(a.ID(), b.ID())
 		})
-
 	} else {
 		slices.SortFunc(h.tables, func(a, b *table.Table) int {
-			return bytes.Compare(a.GetLastKey(), b.GetLastKey())
+			return bytes.Compare(a.GetMaxKey(), b.GetMaxKey())
 		})
 	}
 }
 
-// findOverlapTables
-func (h *Handler) findOverlapTables() (int, []*table.Table) {
-	h.RLock()
-	defer h.RUnlock()
-
-	// merge all level0 tables.
+// truncateOverlapTables
+func (h *handler) truncateOverlapTables() (newTables, overlapTables []*table.Table) {
+	// compact all in level0.
 	if h.level == 0 {
-		return 0, h.tables
+		return nil, h.tables
+	}
+	if len(h.tables) <= 1 {
+		return h.tables, nil
 	}
 
-	return -1, nil
+	newTables = make([]*table.Table, 0, maxCompactTableLength)
+	overlapTables = make([]*table.Table, 0, maxCompactTableLength)
+
+	// find overlap tables.
+	var krange = [2][]byte{
+		h.tables[0].GetMinKey(),
+		h.tables[0].GetMaxKey(),
+	}
+
+	for _, table := range h.tables[1:] {
+		minKey, maxKey := table.GetMinKey(), table.GetMaxKey()
+
+		// is overlap
+		if bcmp.Between(minKey, krange[0], krange[1]) || bcmp.Between(maxKey, krange[0], krange[1]) {
+			krange[0] = bcmp.Min(krange[0], minKey)
+			krange[1] = bcmp.Max(krange[1], maxKey)
+			overlapTables = append(overlapTables, table)
+
+		} else {
+			newTables = append(newTables, table)
+		}
+	}
+	return
 }

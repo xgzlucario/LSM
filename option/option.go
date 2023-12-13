@@ -18,8 +18,8 @@ type Option struct {
 
 // DefaultOption
 var DefaultOption = &Option{
-	MemDBSize:            16 * MB,
-	DataBlockSize:        16 * KB,
+	MemDBSize:            4 * MB,
+	DataBlockSize:        4 * KB,
 	MinorCompactInterval: time.Second,
 	MajorCompactInterval: 5 * time.Second,
 }
