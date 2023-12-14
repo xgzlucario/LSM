@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/andy-kimball/arenaskl"
-	"github.com/sourcegraph/conc/pool"
 )
 
 const (
@@ -14,30 +13,40 @@ const (
 	typeDel uint16 = 2
 )
 
-var (
-	ErrImmutable = errors.New("memdb: attempt to change an immutable db")
-)
-
 // DB is the memory db of LSM-Tree.
 type DB struct {
-	cap uint32
-	skl *arenaskl.Skiplist
-	it  *arenaskl.Iterator
+	arena *arenaskl.Arena
+	skl   *arenaskl.Skiplist
+	it    *arenaskl.Iterator
 }
 
 // New
 func New(cap uint32) *DB {
-	skl := arenaskl.NewSkiplist(arenaskl.NewArena(cap))
+	arena := arenaskl.NewArena(cap)
+	skl := arenaskl.NewSkiplist(arena)
 	var it arenaskl.Iterator
 	it.Init(skl)
 
-	return &DB{cap: cap, skl: skl, it: &it}
+	return &DB{arena: arena, skl: skl, it: &it}
+}
+
+// NewSpare returns a db with a bit of redundant space.
+// this is to prevent the areana from filling up and causing errors.
+// MAKE SURE you really need to call this function!
+func NewSpare(cap uint32) *DB {
+	return New(uint32(float64(cap) * 1.05))
 }
 
 // String
 func (db *DB) String() string {
 	return fmt.Sprintf("[memdb] cap:%v, min:%s, max:%s\n",
-		db.cap, db.MinKey(), db.MaxKey())
+		db.Capacity(), db.MinKey(), db.MaxKey())
+}
+
+// Reset
+func (db *DB) Reset() {
+	db.arena.Reset()
+	db.skl = arenaskl.NewSkiplist(db.arena)
 }
 
 // Get
@@ -48,9 +57,9 @@ func (db *DB) Get(key []byte) ([]byte, bool) {
 	return nil, false
 }
 
-// Get
+// Capacity
 func (db *DB) Capacity() uint32 {
-	return db.cap
+	return db.arena.Cap()
 }
 
 // Put
@@ -93,7 +102,7 @@ func (db *DB) seek(key []byte) bool {
 func Merge(dbs ...*DB) *DB {
 	var cap uint32
 	for _, m := range dbs {
-		cap += m.cap
+		cap += m.Capacity()
 	}
 	db := New(cap)
 
@@ -116,17 +125,17 @@ func Merge(dbs ...*DB) *DB {
 }
 
 // SplitFunc
-func (db *DB) SplitFunc(eachNewDBSize uint32, cb func(*DB) error) error {
-	pool := pool.New().WithErrors()
-	newdb := New(eachNewDBSize)
+func (db *DB) SplitFunc(eachBlockSize uint32, cb func(*DB) error) error {
+	newdb := NewSpare(eachBlockSize)
 
 	db.Iter(func(key, value []byte, meta uint16) {
 		if full, err := newdb.PutIsFull(key, value, meta); full {
-			// dump table.
-			pool.Go(func() error { return cb(newdb) })
-
-			// create new memdb.
-			newdb = New(eachNewDBSize)
+			// dump table if full.
+			if err := cb(newdb); err != nil {
+				panic(err)
+			}
+			// reset to receive new data.
+			newdb.Reset()
 			if err := newdb.Put(key, value, meta); err != nil {
 				panic(err)
 			}
@@ -137,7 +146,9 @@ func (db *DB) SplitFunc(eachNewDBSize uint32, cb func(*DB) error) error {
 	})
 
 	// dump last table.
-	pool.Go(func() error { return cb(newdb) })
+	if err := cb(newdb); err != nil {
+		panic(err)
+	}
 
-	return pool.Wait()
+	return nil
 }

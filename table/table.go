@@ -192,7 +192,7 @@ func (s *Table) loadDataBlock(entry *pb.IndexBlockEntry) (bool, error) {
 
 	// put to memtable.
 	if s.m == nil {
-		s.m = memdb.New(uint32(float64(s.opt.MemDBSize) * 1.1))
+		s.m = memdb.NewSpare(s.opt.MemDBSize)
 	}
 	for i, k := range dataBlock.Keys {
 		if err := s.m.Put(k, dataBlock.Values[i], uint16(dataBlock.Types[i])); err != nil {

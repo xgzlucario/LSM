@@ -16,23 +16,29 @@ import (
 
 // Writer
 type Writer struct {
+	buf *bytes.Buffer
 	opt *option.Option
 }
 
 // NewWriter
 func NewWriter(opt *option.Option) *Writer {
-	return &Writer{opt: opt}
+	return &Writer{
+		opt: opt,
+		buf: bytes.NewBuffer(make([]byte, 0, opt.MemDBSize)),
+	}
 }
 
 // WriteTable
 func (w *Writer) WriteTable(level int, id uint64, db *memdb.DB) (*Table, error) {
-	data := w.encodeTable(level, id, db)
+	if err := w.encodeTable(level, id, db); err != nil {
+		return nil, err
+	}
 
 	// write to disk.
 	name := fmt.Sprintf("%08d.sst", id)
 	path := path.Join(w.opt.Path, name)
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, w.buf.Bytes(), 0644); err != nil {
 		return nil, err
 	}
 
@@ -45,9 +51,9 @@ func (w *Writer) WriteTable(level int, id uint64, db *memdb.DB) (*Table, error) 
 	return table, nil
 }
 
-// encodeTable
-func (w *Writer) encodeTable(level int, id uint64, db *memdb.DB) []byte {
-	buf := bytes.NewBuffer(make([]byte, 0, db.Capacity()))
+// encodeTable encode db to buffer.
+func (w *Writer) encodeTable(level int, id uint64, db *memdb.DB) error {
+	w.buf.Reset()
 	var size, length uint32
 
 	// initial.
@@ -64,15 +70,14 @@ func (w *Writer) encodeTable(level int, id uint64, db *memdb.DB) []byte {
 
 		indexBlock.Entries = append(indexBlock.Entries, &pb.IndexBlockEntry{
 			MaxKey: dataBlock.Keys[len(dataBlock.Keys)-1],
-			Offset: uint32(buf.Len()),
+			Offset: uint32(w.buf.Len()),
 			Size:   uint32(len(dst)),
 			Length: length,
 		})
-		buf.Write(dst)
+		w.buf.Write(dst)
 
 		dataBlock.Reset()
-		size = 0
-		length = 0
+		size, length = 0, 0
 	}
 
 	db.Iter(func(key, value []byte, meta uint16) {
@@ -95,17 +100,18 @@ func (w *Writer) encodeTable(level int, id uint64, db *memdb.DB) []byte {
 	}
 
 	// encode index block.
-	data, _ := proto.Marshal(indexBlock)
-	buf.Write(data)
+	data, err := proto.Marshal(indexBlock)
+	if err != nil {
+		return err
+	}
+	w.buf.Write(data)
 
 	// encode footer.
-	binary.Write(buf, order, Footer{
+	return binary.Write(w.buf, order, Footer{
 		Level:          uint32(level),
 		CRC:            crc32.ChecksumIEEE(data),
 		IndexBlockSize: uint64(len(data)),
 		Id:             id,
 		MagicNumber:    magicNumber,
 	})
-
-	return buf.Bytes()
 }
