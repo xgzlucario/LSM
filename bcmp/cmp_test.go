@@ -13,10 +13,11 @@ import (
 func TestBcmp(t *testing.T) {
 	assert := assert.New(t)
 
-	const num = 10000
+	const num = 10 * 10000
 	testData := make([][]byte, 0, num)
 	source := rand.NewSource(time.Now().UnixNano())
 
+	// gen random data.
 	for i := 0; i < num; i++ {
 		rnum := uint64(source.Int63())
 		bytes := make([]byte, 8)
@@ -30,9 +31,19 @@ func TestBcmp(t *testing.T) {
 		b := testData[i]
 
 		assert.Equal(bytes.Compare(a, b), Compare(a, b))
+		assert.Equal(bytes.Compare(a, b) < 0, Less(a, b))
 		assert.Equal(bytes.Compare(a, b) <= 0, LessEqual(a, b))
 		assert.Equal(bytes.Compare(a, b) >= 0, GreatEqual(a, b))
+		assert.Equal(bytes.Compare(a, b) > 0, Great(a, b))
 		assert.Equal(bytes.Equal(a, b), Equal(a, b))
+
+		_min := Min(a, b)
+		assert.True(LessEqual(_min, a))
+		assert.True(LessEqual(_min, b))
+
+		_max := Max(a, b)
+		assert.True(GreatEqual(_max, a))
+		assert.True(GreatEqual(_max, b))
 
 		target := []byte{100, 101, 102}
 		assert.Equal(

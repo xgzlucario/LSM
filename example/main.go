@@ -27,13 +27,34 @@ func main() {
 		panic(err)
 	}
 
-	for i := 0; ; i++ {
-		k := []byte(fmt.Sprintf("%08d", i))
-
-		if err := lsm.Put(k, k); err != nil {
-			panic(err)
+	num := 100 * 10000
+	for i := 0; i < num; i++ {
+		if i%3 == 0 {
+			k := []byte(fmt.Sprintf("%06d", i))
+			if err := lsm.Put(k, k); err != nil {
+				panic(err)
+			}
 		}
+		time.Sleep(time.Microsecond / 10)
+	}
 
+	for i := 0; i < num; i++ {
+		if i%3 == 1 {
+			k := []byte(fmt.Sprintf("%06d", i))
+			if err := lsm.Put(k, k); err != nil {
+				panic(err)
+			}
+		}
+		time.Sleep(time.Microsecond / 10)
+	}
+
+	for i := 0; i < num; i++ {
+		if i%3 == 2 {
+			k := []byte(fmt.Sprintf("%06d", i))
+			if err := lsm.Put(k, k); err != nil {
+				panic(err)
+			}
+		}
 		time.Sleep(time.Microsecond / 10)
 	}
 }
