@@ -95,12 +95,6 @@ func (s *Table) GetMemDB() *memdb.DB {
 	return s.m
 }
 
-// GetFileSize
-func (s *Table) GetFileSize() int64 {
-	stat, _ := s.fd.Stat()
-	return stat.Size()
-}
-
 // Close
 func (s *Table) Close() error {
 	return s.fd.Close()
@@ -195,8 +189,8 @@ func (s *Table) loadDataBlock(entry *pb.IndexBlockEntry) (bool, error) {
 		s.m = memdb.NewSpare(s.opt.MemDBSize)
 	}
 	for i, k := range dataBlock.Keys {
-		if err := s.m.Put(k, dataBlock.Values[i], uint16(dataBlock.Types[i])); err != nil {
-			panic(err)
+		if s.m.Put(k, dataBlock.Values[i], uint16(dataBlock.Types[i])) {
+			panic("bug: memdb is not large enough")
 		}
 	}
 	entry.Cached = true
@@ -241,15 +235,4 @@ func MergeTables(tables ...*Table) *memdb.DB {
 	}
 
 	return memdb.Merge(db...)
-}
-
-// IsOverlap
-func (t *Table) IsOverlap(target *Table) bool {
-	return bcmp.Between(t.GetMinKey(), target.GetMinKey(), t.GetMaxKey()) ||
-		bcmp.Between(t.GetMinKey(), target.GetMaxKey(), t.GetMaxKey())
-}
-
-// ClearCache
-func (t *Table) ClearCache() {
-	t.m = nil
 }

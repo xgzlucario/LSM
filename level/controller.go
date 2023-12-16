@@ -49,8 +49,6 @@ func (c *Controller) BuildFromDisk() error {
 	defer c.mu.Unlock()
 
 	for _, handler := range c.handlers {
-		handler.Lock()
-		defer handler.Unlock()
 		handler.tables = handler.tables[:0]
 	}
 
@@ -102,10 +100,7 @@ func (c *Controller) Compact() error {
 
 	// compact each level.
 	for _, handler := range c.handlers {
-		handler.Lock()
-
 		if len(handler.tables) == 0 {
-			handler.Unlock()
 			continue
 		}
 		handler.sortTables()
@@ -119,7 +114,6 @@ func (c *Controller) Compact() error {
 		} else {
 			tables, truncateTables = handler.truncateOverlapTables()
 			if len(truncateTables) <= 1 {
-				handler.Unlock()
 				continue
 			}
 			handler.tables = tables
@@ -144,8 +138,6 @@ func (c *Controller) Compact() error {
 		// delete truncate tables.
 		handler.delTables(truncateTables...)
 		handler.sortTables()
-
-		handler.Unlock()
 	}
 
 	return nil

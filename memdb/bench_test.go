@@ -10,11 +10,8 @@ func BenchmarkPut(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		k := []byte(fmt.Sprintf("%08d", i))
 
-		if full, err := db.PutIsFull(k, k, typeVal); full {
+		if db.Put(k, k, typeVal) {
 			db = New(testMemDBSize)
-
-		} else if err != nil {
-			panic(err)
 		}
 	}
 }
@@ -24,11 +21,8 @@ func BenchmarkPutReset(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		k := []byte(fmt.Sprintf("%08d", i))
 
-		if full, err := db.PutIsFull(k, k, typeVal); full {
+		if db.Put(k, k, typeVal) {
 			db.Reset()
-
-		} else if err != nil {
-			panic(err)
 		}
 	}
 }

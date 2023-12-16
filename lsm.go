@@ -92,19 +92,16 @@ func NewLSM(dir string, opt *option.Option) (*LSM, error) {
 }
 
 // Put
-func (lsm *LSM) Put(key, value []byte) error {
-	full, err := lsm.db.PutIsFull(key, value, 1)
+func (lsm *LSM) Put(key, value []byte) {
 	// memdb is full.
-	if full {
-		newdb := memdb.New(lsm.MemDBSize)
+	if lsm.db.Put(key, value, 1) {
 		lsm.mu.Lock()
 		lsm.dbList = append(lsm.dbList, lsm.db)
-		lsm.db = newdb
+		lsm.db = memdb.New(lsm.MemDBSize)
 		lsm.mu.Unlock()
 
-		return lsm.db.Put(key, value, 1)
+		lsm.db.Put(key, value, 1)
 	}
-	return err
 }
 
 // Close

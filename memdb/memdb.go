@@ -57,20 +57,38 @@ func (db *DB) Get(key []byte) ([]byte, bool) {
 	return nil, false
 }
 
+// Len
+func (db *DB) Len() int {
+	var count int
+	for db.it.SeekToFirst(); db.it.Valid(); db.it.Next() {
+		count++
+	}
+	return count
+}
+
 // Capacity
 func (db *DB) Capacity() uint32 {
 	return db.arena.Cap()
 }
 
-// Put
-func (db *DB) Put(key, value []byte, vtype uint16) error {
-	return db.it.Add(key, value, vtype)
+// put
+func (db *DB) put(key, value []byte, meta uint16) error {
+	if db.seek(key) {
+		return db.it.Set(value, meta)
+	}
+	return db.it.Add(key, value, meta)
 }
 
-// PutFull
-func (db *DB) PutIsFull(key, value []byte, vtype uint16) (bool, error) {
-	err := db.Put(key, value, vtype)
-	return errors.Is(err, arenaskl.ErrArenaFull), err
+// Put return true if memdb is full.
+func (db *DB) Put(key, value []byte, meta uint16) bool {
+	err := db.put(key, value, meta)
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, arenaskl.ErrArenaFull) {
+		return true
+	}
+	panic(fmt.Errorf("bug: put memdb error: %v", err))
 }
 
 // MinKey
@@ -86,7 +104,7 @@ func (db *DB) MaxKey() []byte {
 }
 
 // Iter
-func (db *DB) Iter(f func([]byte, []byte, uint16)) {
+func (db *DB) Iter(f func(key, value []byte, meta uint16)) {
 	for db.it.SeekToFirst(); db.it.Valid(); db.it.Next() {
 		f(db.it.Key(), db.it.Value(), db.it.Meta())
 	}
@@ -104,19 +122,13 @@ func Merge(dbs ...*DB) *DB {
 	for _, m := range dbs {
 		cap += m.Capacity()
 	}
-	db := New(cap)
+	db := NewSpare(cap)
 
 	// merge memdbs sequentially.
 	for _, m := range dbs {
-		m.Iter(func(key, value []byte, vtype uint16) {
-			if db.seek(key) {
-				if err := db.it.Set(value, vtype); err != nil {
-					panic(err)
-				}
-			} else {
-				if err := db.Put(key, value, vtype); err != nil {
-					panic(err)
-				}
+		m.Iter(func(key, value []byte, meta uint16) {
+			if db.Put(key, value, meta) {
+				panic("bug: merge memdb error")
 			}
 		})
 	}
@@ -126,29 +138,30 @@ func Merge(dbs ...*DB) *DB {
 
 // SplitFunc
 func (db *DB) SplitFunc(eachBlockSize uint32, cb func(*DB) error) error {
-	newdb := NewSpare(eachBlockSize)
+	newdb := New(eachBlockSize)
 
 	db.Iter(func(key, value []byte, meta uint16) {
-		if full, err := newdb.PutIsFull(key, value, meta); full {
-			// dump table if full.
+		if newdb.Put(key, value, meta) {
 			if err := cb(newdb); err != nil {
 				panic(err)
 			}
-			// reset to receive new data.
-			newdb.Reset()
-			if err := newdb.Put(key, value, meta); err != nil {
-				panic(err)
-			}
 
-		} else if err != nil {
-			panic(err)
+			newdb.Reset()
+			if newdb.Put(key, value, meta) {
+				panic("bug: memdb reset error")
+			}
 		}
 	})
 
 	// dump last table.
-	if err := cb(newdb); err != nil {
-		panic(err)
-	}
+	return cb(newdb)
+}
 
-	return nil
+// toMap just for test.
+func (db *DB) toMap() map[string][]byte {
+	m := make(map[string][]byte)
+	db.Iter(func(key, value []byte, meta uint16) {
+		m[string(key)] = value
+	})
+	return m
 }

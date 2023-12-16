@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"cmp"
 	"slices"
-	"sync"
 
 	"github.com/xgzlucario/LSM/bcmp"
 	"github.com/xgzlucario/LSM/table"
@@ -12,17 +11,13 @@ import (
 
 // handler is a lsm-tree level handler.
 type handler struct {
-	// locker needs to be controlled manually from the outside.
-	sync.RWMutex
 	level  int
-	size   int64
 	tables []*table.Table
 }
 
 // addTables
 func (h *handler) addTables(tables ...*table.Table) {
 	for _, t := range tables {
-		h.size += t.GetFileSize()
 		t.AddRef()
 	}
 	h.tables = append(h.tables, tables...)
@@ -31,7 +26,6 @@ func (h *handler) addTables(tables ...*table.Table) {
 // delTables
 func (h *handler) delTables(tables ...*table.Table) {
 	for _, t := range tables {
-		h.size -= t.GetFileSize()
 		t.DelRef()
 	}
 }

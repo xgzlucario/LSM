@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestBcmp(t *testing.T) {
+func TestCompare(t *testing.T) {
 	assert := assert.New(t)
 
 	const num = 10 * 10000
@@ -33,9 +33,9 @@ func TestBcmp(t *testing.T) {
 		assert.Equal(bytes.Compare(a, b), Compare(a, b))
 		assert.Equal(bytes.Compare(a, b) < 0, Less(a, b))
 		assert.Equal(bytes.Compare(a, b) <= 0, LessEqual(a, b))
+		assert.Equal(bytes.Equal(a, b), Equal(a, b))
 		assert.Equal(bytes.Compare(a, b) >= 0, GreatEqual(a, b))
 		assert.Equal(bytes.Compare(a, b) > 0, Great(a, b))
-		assert.Equal(bytes.Equal(a, b), Equal(a, b))
 
 		_min := Min(a, b)
 		assert.True(LessEqual(_min, a))
@@ -51,4 +51,52 @@ func TestBcmp(t *testing.T) {
 			Between(target, a, b),
 		)
 	}
+}
+
+func TestMergeInterval(t *testing.T) {
+	assert := assert.New(t)
+
+	// 1
+	testData := []Interval{
+		{Min: []byte{1}, Max: []byte{2}},
+		{Min: []byte{3}, Max: []byte{4}},
+		{Min: []byte{5}, Max: []byte{6}},
+	}
+	assert.Equal(testData, MergeInterval(testData))
+	assert.Equal([][]int{{0}, {1}, {2}}, MergeIntervalIndex(testData))
+
+	// 2
+	testData = []Interval{
+		{Min: []byte{1}, Max: []byte{3}},
+		{Min: []byte{4}, Max: []byte{6}},
+		{Min: []byte{5}, Max: []byte{8}},
+	}
+	assert.Equal([]Interval{
+		{Min: []byte{1}, Max: []byte{3}},
+		{Min: []byte{4}, Max: []byte{8}},
+	}, MergeInterval(testData))
+	assert.Equal([][]int{{0}, {1, 2}}, MergeIntervalIndex(testData))
+
+	// 3
+	testData = []Interval{
+		{Min: []byte{1}, Max: []byte{3}},
+		{Min: []byte{2}, Max: []byte{6}},
+		{Min: []byte{7}, Max: []byte{8}},
+	}
+	assert.Equal([]Interval{
+		{Min: []byte{1}, Max: []byte{6}},
+		{Min: []byte{7}, Max: []byte{8}},
+	}, MergeInterval(testData))
+	assert.Equal([][]int{{0, 1}, {2}}, MergeIntervalIndex(testData))
+
+	// 4
+	testData = []Interval{
+		{Min: []byte{1}, Max: []byte{5}},
+		{Min: []byte{2}, Max: []byte{7}},
+		{Min: []byte{6}, Max: []byte{8}},
+	}
+	assert.Equal([]Interval{
+		{Min: []byte{1}, Max: []byte{8}},
+	}, MergeInterval(testData))
+	assert.Equal([][]int{{0, 1, 2}}, MergeIntervalIndex(testData))
 }

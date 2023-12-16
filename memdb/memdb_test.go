@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/andy-kimball/arenaskl"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -61,6 +60,20 @@ func checkData(m *DB, start, end int, assert *assert.Assertions) {
 		assert.Equal(nilBytes, value)
 		assert.False(ok)
 	}
+
+	// split and check.
+	totalLen := m.Len()
+	var len int
+	m.SplitFunc(testMemDBSize/1024, func(db *DB) error {
+		len += db.Len()
+		for k, v := range db.toMap() {
+			value, ok := m.Get([]byte(k))
+			assert.Equal(v, value)
+			assert.True(ok)
+		}
+		return nil
+	})
+	assert.Equal(totalLen, len)
 }
 
 func TestGet(t *testing.T) {
@@ -94,17 +107,15 @@ func TestPutIfFull(t *testing.T) {
 	// ok.
 	for i := 0; i < 10; i++ {
 		k := []byte(strconv.Itoa(i))
-		full, err := m.PutIsFull(k, k, typeVal)
+		full := m.Put(k, k, typeVal)
 		assert.False(full)
-		assert.Nil(err)
 	}
 
 	// overflow.
 	for i := 0; i < 100; i++ {
 		k := []byte(strings.Repeat(strconv.Itoa(i), 1024))
-		full, err := m.PutIsFull(k, k, typeVal)
+		full := m.Put(k, k, typeVal)
 		assert.True(full)
-		assert.Equal(err, arenaskl.ErrArenaFull)
 	}
 }
 
@@ -114,8 +125,7 @@ func TestMerge(t *testing.T) {
 		m1 := getMemDB(0, 10000)
 		m2 := getMemDB(10000, 20000)
 		m1 = Merge(m1, m2)
-		// check cap.
-		assert.Equal(uint32(testMemDBSize*2), m1.Capacity())
+
 		// check data.
 		checkData(m1, 0, 20000, assert)
 	}
@@ -123,8 +133,7 @@ func TestMerge(t *testing.T) {
 		m1 := getMemDB(0, 15000)
 		m2 := getMemDB(10000, 20000)
 		m1 = Merge(m1, m2)
-		// check cap.
-		assert.Equal(uint32(testMemDBSize*2), m1.Capacity())
+
 		// check data.
 		checkData(m1, 0, 20000, assert)
 	}
