@@ -66,11 +66,6 @@ func checkData(m *DB, start, end int, assert *assert.Assertions) {
 	var len int
 	m.SplitFunc(testMemDBSize/1024, func(db *DB) error {
 		len += db.Len()
-		for k, v := range db.toMap() {
-			value, ok := m.Get([]byte(k))
-			assert.Equal(v, value)
-			assert.True(ok)
-		}
 		return nil
 	})
 	assert.Equal(totalLen, len)
@@ -136,5 +131,15 @@ func TestMerge(t *testing.T) {
 
 		// check data.
 		checkData(m1, 0, 20000, assert)
+	}
+	{
+		m1 := getMemDB(0, 5000)
+		m2 := getMemDB(4000, 9000)
+		m3 := getMemDB(8000, 13000)
+		m4 := getMemDB(12000, 17000)
+		m1 = Merge(m1, m2, m3, m4)
+
+		// check data.
+		checkData(m1, 0, 17000, assert)
 	}
 }

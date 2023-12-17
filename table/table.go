@@ -186,7 +186,7 @@ func (s *Table) loadDataBlock(entry *pb.IndexBlockEntry) (bool, error) {
 
 	// put to memtable.
 	if s.m == nil {
-		s.m = memdb.NewSpare(s.opt.MemDBSize)
+		s.m = memdb.New2(s.opt.MemDBSize)
 	}
 	for i, k := range dataBlock.Keys {
 		if s.m.Put(k, dataBlock.Values[i], uint16(dataBlock.Types[i])) {

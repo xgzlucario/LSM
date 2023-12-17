@@ -3,7 +3,6 @@ package bcmp
 
 import (
 	"bytes"
-	"slices"
 )
 
 func Compare(a, b []byte) int { return bytes.Compare(a, b) }
@@ -40,56 +39,4 @@ func Max(a, b []byte) []byte {
 		return a
 	}
 	return b
-}
-
-type Interval struct {
-	Min, Max []byte
-}
-
-// MergeInterval
-func MergeInterval(input []Interval) []Interval {
-	slices.SortFunc(input, func(a, b Interval) int {
-		return Compare(a.Min, b.Min)
-	})
-
-	res := make([]Interval, 0, len(input)/2)
-
-	for _, i := range input {
-		if len(res) == 0 || Less(res[len(res)-1].Max, i.Min) {
-			res = append(res, i)
-		} else {
-			res[len(res)-1].Max = Max(res[len(res)-1].Max, i.Max)
-		}
-	}
-	return res
-}
-
-// MergeIntervalIndex
-func MergeIntervalIndex(input []Interval) (res [][]int) {
-	var lp, rp int
-	cur := input[0]
-	for {
-		if rp >= len(input) {
-			res = append(res, makeSlice(lp, rp))
-			break
-		}
-		if LessEqual(input[rp].Min, cur.Max) {
-			cur.Max = Max(cur.Max, input[rp].Max)
-			rp++
-
-		} else {
-			res = append(res, makeSlice(lp, rp))
-			lp, rp = rp, rp+1
-			cur = input[lp]
-		}
-	}
-	return
-}
-
-func makeSlice(start, end int) []int {
-	slice := make([]int, end-start)
-	for i := range slice {
-		slice[i] = start + i
-	}
-	return slice
 }

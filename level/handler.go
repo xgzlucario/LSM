@@ -5,7 +5,6 @@ import (
 	"cmp"
 	"slices"
 
-	"github.com/xgzlucario/LSM/bcmp"
 	"github.com/xgzlucario/LSM/table"
 )
 
@@ -44,30 +43,12 @@ func (h *handler) sortTables() {
 	}
 }
 
-// truncateOverlapTables
-func (h *handler) truncateOverlapTables() (newTables, overlapTables []*table.Table) {
-	newTables = make([]*table.Table, 0, maxCompactTableLength)
-	overlapTables = make([]*table.Table, 0, maxCompactTableLength)
+// findOverlapTables
+func (h *handler) findOverlapTables() (newTables, overlapTables []*table.Table) {
+	slices.SortFunc(h.tables, func(a, b *table.Table) int {
+		return bytes.Compare(a.GetMinKey(), b.GetMinKey())
+	})
 
 	// find overlap tables.
-	var krange = [2][]byte{
-		h.tables[0].GetMinKey(),
-		h.tables[0].GetMaxKey(),
-	}
-	overlapTables = append(overlapTables, h.tables[0])
-
-	for _, table := range h.tables[1:] {
-		minKey, maxKey := table.GetMinKey(), table.GetMaxKey()
-
-		// is overlap
-		if bcmp.Between(minKey, krange[0], krange[1]) || bcmp.Between(maxKey, krange[0], krange[1]) {
-			krange[0] = bcmp.Min(krange[0], minKey)
-			krange[1] = bcmp.Max(krange[1], maxKey)
-			overlapTables = append(overlapTables, table)
-
-		} else {
-			newTables = append(newTables, table)
-		}
-	}
-	return
+	return nil, h.tables
 }

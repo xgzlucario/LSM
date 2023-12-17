@@ -100,24 +100,18 @@ func (c *Controller) Compact() error {
 
 	// compact each level.
 	for _, handler := range c.handlers {
-		if len(handler.tables) == 0 {
-			continue
-		}
-		handler.sortTables()
-
-		// truncate tables.
 		if handler.level == 0 {
 			truncateTables = handler.tables
-			handler.tables = handler.tables[:0]
+			tables = nil
 			toLevel = 1
 
 		} else {
-			tables, truncateTables = handler.truncateOverlapTables()
-			if len(truncateTables) <= 1 {
-				continue
-			}
-			handler.tables = tables
+			tables, truncateTables = handler.findOverlapTables()
 			toLevel = handler.level
+		}
+
+		if len(truncateTables) == 0 {
+			continue
 		}
 
 		db := table.MergeTables(truncateTables...)
@@ -137,6 +131,7 @@ func (c *Controller) Compact() error {
 
 		// delete truncate tables.
 		handler.delTables(truncateTables...)
+		handler.tables = tables
 		handler.sortTables()
 	}
 

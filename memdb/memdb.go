@@ -30,17 +30,17 @@ func New(cap uint32) *DB {
 	return &DB{arena: arena, skl: skl, it: &it}
 }
 
-// NewSpare returns a db with a bit of redundant space.
+// New2 returns a db with a bit of redundant space.
 // this is to prevent the areana from filling up and causing errors.
 // MAKE SURE you really need to call this function!
-func NewSpare(cap uint32) *DB {
+func New2(cap uint32) *DB {
 	return New(uint32(float64(cap) * 1.05))
 }
 
 // String
 func (db *DB) String() string {
-	return fmt.Sprintf("[memdb] cap:%v, min:%s, max:%s\n",
-		db.Capacity(), db.MinKey(), db.MaxKey())
+	return fmt.Sprintf("[memdb] len:%v, cap:%v, min:%s, max:%s\n",
+		db.Len(), db.Capacity(), db.MinKey(), db.MaxKey())
 }
 
 // Reset
@@ -88,7 +88,7 @@ func (db *DB) Put(key, value []byte, meta uint16) bool {
 	if errors.Is(err, arenaskl.ErrArenaFull) {
 		return true
 	}
-	panic(fmt.Errorf("bug: put memdb error: %v", err))
+	panic("bug: put memdb error")
 }
 
 // MinKey
@@ -122,7 +122,7 @@ func Merge(dbs ...*DB) *DB {
 	for _, m := range dbs {
 		cap += m.Capacity()
 	}
-	db := NewSpare(cap)
+	db := New2(cap)
 
 	// merge memdbs sequentially.
 	for _, m := range dbs {
@@ -148,20 +148,11 @@ func (db *DB) SplitFunc(eachBlockSize uint32, cb func(*DB) error) error {
 
 			newdb.Reset()
 			if newdb.Put(key, value, meta) {
-				panic("bug: memdb reset error")
+				panic("bug: put memdb error")
 			}
 		}
 	})
 
 	// dump last table.
 	return cb(newdb)
-}
-
-// toMap just for test.
-func (db *DB) toMap() map[string][]byte {
-	m := make(map[string][]byte)
-	db.Iter(func(key, value []byte, meta uint16) {
-		m[string(key)] = value
-	})
-	return m
 }
